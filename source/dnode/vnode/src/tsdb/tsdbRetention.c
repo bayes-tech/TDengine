@@ -16,9 +16,10 @@
 #include "tcs.h"
 #include "tsdb.h"
 #include "tsdbFS2.h"
+#include "tsdbInt.h"
 #include "vnd.h"
 
-extern int32_t tsdbAsyncCompact(STsdb *tsdb, const STimeWindow *tw, bool s3Migrate);
+extern int32_t tsdbAsyncCompact(STsdb *tsdb, const STimeWindow *tw, ETsdbOpType type, bool force);
 extern bool    tsdbShouldCompact(const STFileSet *fset, int32_t vgId);
 
 typedef struct {
@@ -703,7 +704,7 @@ static int32_t tsdbDoS3Migrate(SRTNer *rtner) {
         tsdbFidKeyRange(fset->fid, rtner->tsdb->keepCfg.days, rtner->tsdb->keepCfg.precision, &win.skey, &win.ekey);
 
         tsdbInfo("vgId:%d, async compact begin lcn: %d.", TD_VID(rtner->tsdb->pVnode), lcn);
-        code = tsdbAsyncCompact(rtner->tsdb, &win, true);
+        code = tsdbAsyncCompact(rtner->tsdb, &win, TSDB_OPTR_NORMAL, false);
         tsdbInfo("vgId:%d, async compact end lcn: %d.", TD_VID(rtner->tsdb->pVnode), lcn);
         goto _exit;
         return code;

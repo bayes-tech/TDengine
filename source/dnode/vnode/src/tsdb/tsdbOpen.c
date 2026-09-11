@@ -84,9 +84,7 @@ int32_t tsdbOpen(SVnode *pVnode, STsdb **ppTsdb, const char *dir, STsdbKeepCfg *
   code = tsdbOpenCache(pTsdb);
   TSDB_CHECK_CODE(code, lino, _exit);
 
-#ifdef TD_ENTERPRISE
   TAOS_CHECK_GOTO(tsdbOpenCompMonitor(pTsdb), &lino, _exit);
-#endif
 
 _exit:
   if (code) {
@@ -116,9 +114,7 @@ void tsdbClose(STsdb **pTsdb) {
 
     tsdbCloseFS(&(*pTsdb)->pFS);
     tsdbCloseCache(*pTsdb);
-#ifdef TD_ENTERPRISE
     tsdbCloseCompMonitor(*pTsdb);
-#endif
     (void)taosThreadMutexDestroy(&(*pTsdb)->mutex);
     taosMemoryFreeClear(*pTsdb);
   }

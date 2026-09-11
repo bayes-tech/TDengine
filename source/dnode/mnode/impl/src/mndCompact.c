@@ -497,6 +497,136 @@ static int32_t mndKillCompact(SMnode *pMnode, SRpcMsg *pReq, SCompactObj *pCompa
   return 0;
 }
 
+// Force kill: send kill to online vnodes only; commit log drops all SDB records immediately.
+// This bypasses the normal mnode cleanup flow (which waits for every dnode to report), so it can
+// terminate a task while a dnode is offline. It is dangerous: data files being rewritten by the
+// compact task may be left in an intermediate state and the offline node will not be cleaned up.
+static int32_t mndKillCompactForce(SMnode *pMnode, SRpcMsg *pReq, SCompactObj *pCompact) {
+  int32_t code = 0;
+  STrans *pTrans = mndTransCreate(pMnode, TRN_POLICY_ROLLBACK, TRN_CONFLICT_DB, pReq, "kill-compact-force");
+  if (pTrans == NULL) {
+    mError("compact:%" PRId32 ", force kill failed to create trans since %s", pCompact->compactId, terrstr());
+    code = TSDB_CODE_MND_RETURN_VALUE_NULL;
+    if (terrno != 0) code = terrno;
+    TAOS_RETURN(code);
+  }
+  mInfo("trans:%d, used to force kill compact:%" PRId32, pTrans->id, pCompact->compactId);
+
+  mndTransSetDbName(pTrans, pCompact->dbname, NULL);
+
+  int64_t curMs = taosGetTimestampMs();
+
+  // Send kill request to online vnodes only; offline vnodes are skipped
+  void *pIter = NULL;
+  while (1) {
+    SCompactDetailObj *pDetail = NULL;
+    pIter = sdbFetch(pMnode->pSdb, SDB_COMPACT_DETAIL, pIter, (void **)&pDetail);
+    if (pIter == NULL) break;
+
+    if (pDetail->compactId == pCompact->compactId) {
+      SDnodeObj *pDnode = mndAcquireDnode(pMnode, pDetail->dnodeId);
+      if (pDnode == NULL) {
+        mWarn("trans:%d, compact:%" PRId32 " dnodeId:%d not found, skip redo action", pTrans->id, pCompact->compactId,
+              pDetail->dnodeId);
+        sdbRelease(pMnode->pSdb, pDetail);
+        continue;
+      }
+      bool online = mndIsDnodeOnline(pDnode, curMs);
+      mndReleaseDnode(pMnode, pDnode);
+
+      if (!online) {
+        mWarn("trans:%d, compact:%" PRId32 " dnodeId:%d is offline, skip redo action", pTrans->id, pCompact->compactId,
+              pDetail->dnodeId);
+        sdbRelease(pMnode->pSdb, pDetail);
+        continue;
+      }
+
+      SVgObj *pVgroup = mndAcquireVgroup(pMnode, pDetail->vgId);
+      if (pVgroup == NULL) {
+        mWarn("trans:%d, compact:%" PRId32 " vgId:%d not found, skip redo action", pTrans->id, pCompact->compactId,
+              pDetail->vgId);
+        sdbRelease(pMnode->pSdb, pDetail);
+        continue;
+      }
+
+      code = mndAddKillCompactAction(pMnode, pTrans, pVgroup, pCompact->compactId, pDetail->dnodeId);
+      mndReleaseVgroup(pMnode, pVgroup);
+      if (code != 0) {
+        mWarn("trans:%d, compact:%" PRId32 " failed to add kill action for dnodeId:%d, skip: %s", pTrans->id,
+              pCompact->compactId, pDetail->dnodeId, terrstr());
+        code = 0;
+      }
+    }
+
+    sdbRelease(pMnode->pSdb, pDetail);
+  }
+
+  // Commit log: drop all detail records
+  pIter = NULL;
+  while (1) {
+    SCompactDetailObj *pDetail = NULL;
+    pIter = sdbFetch(pMnode->pSdb, SDB_COMPACT_DETAIL, pIter, (void **)&pDetail);
+    if (pIter == NULL) break;
+
+    if (pDetail->compactId == pCompact->compactId) {
+      SSdbRaw *pDetailRaw = mndCompactDetailActionEncode(pDetail);
+      if (pDetailRaw == NULL) {
+        mError("trans:%d, failed to encode detail for vgId:%d since %s", pTrans->id, pDetail->vgId, terrstr());
+        sdbCancelFetch(pMnode->pSdb, pIter);
+        sdbRelease(pMnode->pSdb, pDetail);
+        mndTransDrop(pTrans);
+        code = TSDB_CODE_MND_RETURN_VALUE_NULL;
+        if (terrno != 0) code = terrno;
+        TAOS_RETURN(code);
+      }
+      if ((code = mndTransAppendCommitlog(pTrans, pDetailRaw)) != 0) {
+        mError("trans:%d, failed to append detail commit log since %s", pTrans->id, terrstr());
+        sdbCancelFetch(pMnode->pSdb, pIter);
+        sdbRelease(pMnode->pSdb, pDetail);
+        mndTransDrop(pTrans);
+        TAOS_RETURN(code);
+      }
+      if ((code = sdbSetRawStatus(pDetailRaw, SDB_STATUS_DROPPED)) != 0) {
+        sdbCancelFetch(pMnode->pSdb, pIter);
+        sdbRelease(pMnode->pSdb, pDetail);
+        mndTransDrop(pTrans);
+        TAOS_RETURN(code);
+      }
+      mInfo("trans:%d, compact:%" PRId32 " force drop detail vgId:%d", pTrans->id, pCompact->compactId, pDetail->vgId);
+    }
+
+    sdbRelease(pMnode->pSdb, pDetail);
+  }
+
+  // Commit log: drop compact record
+  SSdbRaw *pCommitRaw = mndCompactActionEncode(pCompact);
+  if (pCommitRaw == NULL) {
+    code = TSDB_CODE_MND_RETURN_VALUE_NULL;
+    if (terrno != 0) code = terrno;
+    mndTransDrop(pTrans);
+    TAOS_RETURN(code);
+  }
+  if ((code = mndTransAppendCommitlog(pTrans, pCommitRaw)) != 0) {
+    mError("trans:%d, failed to append compact commit log since %s", pTrans->id, terrstr());
+    mndTransDrop(pTrans);
+    TAOS_RETURN(code);
+  }
+  if ((code = sdbSetRawStatus(pCommitRaw, SDB_STATUS_DROPPED)) != 0) {
+    mndTransDrop(pTrans);
+    TAOS_RETURN(code);
+  }
+  mInfo("trans:%d, compact:%" PRId32 " force drop compact record", pTrans->id, pCompact->compactId);
+
+  if ((code = mndTransPrepare(pMnode, pTrans)) != 0) {
+    mError("trans:%d, failed to prepare since %s", pTrans->id, terrstr());
+    mndTransDrop(pTrans);
+    TAOS_RETURN(code);
+  }
+
+  mndTransDrop(pTrans);
+  return 0;
+}
+
 int32_t mndProcessKillCompactReq(SRpcMsg *pReq) {
   int32_t         code = 0;
   int32_t         lino = 0;
@@ -518,7 +648,11 @@ int32_t mndProcessKillCompactReq(SRpcMsg *pReq) {
 
   TAOS_CHECK_GOTO(mndCheckOperPrivilege(pMnode, pReq->info.conn.user, MND_OPER_COMPACT_DB), &lino, _OVER);
 
-  TAOS_CHECK_GOTO(mndKillCompact(pMnode, pReq, pCompact), &lino, _OVER);
+  if (killCompactReq.force) {
+    TAOS_CHECK_GOTO(mndKillCompactForce(pMnode, pReq, pCompact), &lino, _OVER);
+  } else {
+    TAOS_CHECK_GOTO(mndKillCompact(pMnode, pReq, pCompact), &lino, _OVER);
+  }
 
   code = TSDB_CODE_ACTION_IN_PROGRESS;
 
@@ -852,6 +986,230 @@ static int32_t mndSaveCompactProgress(SMnode *pMnode, int32_t compactId) {
   return 0;
 }
 
+static int32_t mndSetCompactDbCommitLogs(SMnode *pMnode, STrans *pTrans, SDbObj *pDb, int64_t compactTs) {
+  int32_t code = 0;
+  SDbObj  dbObj = {0};
+  memcpy(&dbObj, pDb, sizeof(SDbObj));
+  dbObj.compactStartTime = compactTs;
+
+  SSdbRaw *pCommitRaw = mndDbActionEncode(&dbObj);
+  if (pCommitRaw == NULL) {
+    code = TSDB_CODE_MND_RETURN_VALUE_NULL;
+    if (terrno != 0) code = terrno;
+    TAOS_RETURN(code);
+  }
+  if ((code = mndTransAppendCommitlog(pTrans, pCommitRaw)) != 0) {
+    sdbFreeRaw(pCommitRaw);
+    TAOS_RETURN(code);
+  }
+
+  (void)sdbSetRawStatus(pCommitRaw, SDB_STATUS_READY);
+  TAOS_RETURN(code);
+}
+
+static int32_t mndSetCompactDbRedoActions(SMnode *pMnode, STrans *pTrans, SDbObj *pDb, int64_t compactTs,
+                                          STimeWindow tw, SArray *vgroupIds, bool metaOnly,
+                                          SCompactDbRsp *pCompactRsp) {
+  int32_t code = 0;
+  SSdb   *pSdb = pMnode->pSdb;
+  void   *pIter = NULL;
+
+  SCompactObj compact;
+  if ((code = mndAddCompactToTran(pMnode, pTrans, &compact, pDb, pCompactRsp)) != 0) {
+    TAOS_RETURN(code);
+  }
+
+  int32_t j = 0;
+  int32_t numOfVgroups = taosArrayGetSize(vgroupIds);
+  if (numOfVgroups > 0) {
+    for (int32_t i = 0; i < numOfVgroups; i++) {
+      int64_t vgId = *(int64_t *)taosArrayGet(vgroupIds, i);
+      SVgObj *pVgroup = mndAcquireVgroup(pMnode, vgId);
+
+      if (pVgroup == NULL) {
+        mError("db:%s, vgroup:%" PRId64 " not exist", pDb->name, vgId);
+        TAOS_RETURN(TSDB_CODE_MND_VGROUP_NOT_EXIST);
+      } else if (pVgroup->dbUid != pDb->uid) {
+        mError("db:%s, vgroup:%" PRId64 " not belong to db:%s", pDb->name, vgId, pDb->name);
+        sdbRelease(pSdb, pVgroup);
+        TAOS_RETURN(TSDB_CODE_MND_VGROUP_NOT_EXIST);
+      }
+      sdbRelease(pSdb, pVgroup);
+    }
+
+    for (int32_t i = 0; i < numOfVgroups; i++) {
+      int64_t vgId = *(int64_t *)taosArrayGet(vgroupIds, i);
+      SVgObj *pVgroup = mndAcquireVgroup(pMnode, vgId);
+
+      if ((code = mndBuildCompactVgroupAction(pMnode, pTrans, pDb, pVgroup, compactTs, tw, metaOnly)) != 0) {
+        sdbRelease(pSdb, pVgroup);
+        TAOS_RETURN(code);
+      }
+
+      for (int32_t k = 0; k < pVgroup->replica; k++) {
+        SVnodeGid *gid = &pVgroup->vnodeGid[k];
+        if ((code = mndAddCompactDetailToTran(pMnode, pTrans, &compact, pVgroup, gid, j)) != 0) {
+          sdbRelease(pSdb, pVgroup);
+          TAOS_RETURN(code);
+        }
+        j++;
+      }
+      sdbRelease(pSdb, pVgroup);
+    }
+  } else {
+    while (1) {
+      SVgObj *pVgroup = NULL;
+      pIter = sdbFetch(pSdb, SDB_VGROUP, pIter, (void **)&pVgroup);
+      if (pIter == NULL) break;
+
+      if (pVgroup->dbUid == pDb->uid) {
+        if ((code = mndBuildCompactVgroupAction(pMnode, pTrans, pDb, pVgroup, compactTs, tw, metaOnly)) != 0) {
+          sdbCancelFetch(pSdb, pIter);
+          sdbRelease(pSdb, pVgroup);
+          TAOS_RETURN(code);
+        }
+
+        for (int32_t k = 0; k < pVgroup->replica; k++) {
+          SVnodeGid *gid = &pVgroup->vnodeGid[k];
+          if ((code = mndAddCompactDetailToTran(pMnode, pTrans, &compact, pVgroup, gid, j)) != 0) {
+            sdbCancelFetch(pSdb, pIter);
+            sdbRelease(pSdb, pVgroup);
+            TAOS_RETURN(code);
+          }
+          j++;
+        }
+      }
+
+      sdbRelease(pSdb, pVgroup);
+    }
+  }
+
+  TAOS_RETURN(code);
+}
+
+static int32_t mndBuildCompactDbRsp(SCompactDbRsp *pCompactRsp, int32_t *pRspLen, void **ppRsp, bool useRpcMalloc) {
+  int32_t code = 0;
+  int32_t rspLen = tSerializeSCompactDbRsp(NULL, 0, pCompactRsp);
+  void   *pRsp = NULL;
+  if (useRpcMalloc) {
+    pRsp = rpcMallocCont(rspLen);
+  } else {
+    pRsp = taosMemoryMalloc(rspLen);
+  }
+
+  if (pRsp == NULL) {
+    code = TSDB_CODE_OUT_OF_MEMORY;
+    TAOS_RETURN(code);
+  }
+
+  (void)tSerializeSCompactDbRsp(pRsp, rspLen, pCompactRsp);
+  *pRspLen = rspLen;
+  *ppRsp = pRsp;
+  TAOS_RETURN(code);
+}
+
+int32_t mndCompactDb(SMnode *pMnode, SRpcMsg *pReq, SDbObj *pDb, STimeWindow tw, SArray *vgroupIds, bool metaOnly) {
+  int32_t       code = 0;
+  SCompactDbRsp compactRsp = {0};
+
+  bool  isExist = false;
+  void *pIter = NULL;
+  while (1) {
+    SCompactObj *pCompact = NULL;
+    pIter = sdbFetch(pMnode->pSdb, SDB_COMPACT, pIter, (void **)&pCompact);
+    if (pIter == NULL) break;
+
+    if (strcmp(pCompact->dbname, pDb->name) == 0) {
+      isExist = true;
+    }
+    sdbRelease(pMnode->pSdb, pCompact);
+  }
+  if (isExist) {
+    mInfo("compact db:%s already exist", pDb->name);
+
+    if (pReq) {
+      int32_t rspLen = 0;
+      void   *pRsp = NULL;
+      compactRsp.compactId = 0;
+      compactRsp.bAccepted = false;
+      TAOS_CHECK_RETURN(mndBuildCompactDbRsp(&compactRsp, &rspLen, &pRsp, true));
+
+      pReq->info.rsp = pRsp;
+      pReq->info.rspLen = rspLen;
+    }
+
+    return TSDB_CODE_MND_COMPACT_ALREADY_EXIST;
+  }
+
+  int64_t compactTs = taosGetTimestampMs();
+  STrans *pTrans = mndTransCreate(pMnode, TRN_POLICY_RETRY, TRN_CONFLICT_DB, pReq, "compact-db");
+  if (pTrans == NULL) goto _OVER;
+
+  mInfo("trans:%d, used to compact db:%s", pTrans->id, pDb->name);
+  mndTransSetDbName(pTrans, pDb->name, NULL);
+  TAOS_CHECK_GOTO(mndTrancCheckConflict(pMnode, pTrans), NULL, _OVER);
+
+  TAOS_CHECK_GOTO(mndSetCompactDbCommitLogs(pMnode, pTrans, pDb, compactTs), NULL, _OVER);
+  TAOS_CHECK_GOTO(mndSetCompactDbRedoActions(pMnode, pTrans, pDb, compactTs, tw, vgroupIds, metaOnly, &compactRsp), NULL,
+                  _OVER);
+
+  if (pReq) {
+    int32_t rspLen = 0;
+    void   *pRsp = NULL;
+    compactRsp.bAccepted = true;
+    TAOS_CHECK_GOTO(mndBuildCompactDbRsp(&compactRsp, &rspLen, &pRsp, false), NULL, _OVER);
+    mndTransSetRpcRsp(pTrans, pRsp, rspLen);
+  }
+
+  if (mndTransPrepare(pMnode, pTrans) != 0) goto _OVER;
+  code = 0;
+
+_OVER:
+  mndTransDrop(pTrans);
+  TAOS_RETURN(code);
+}
+
+int32_t mndProcessCompactDbReq(SRpcMsg *pReq) {
+  SMnode       *pMnode = pReq->info.node;
+  int32_t       code = -1;
+  SDbObj       *pDb = NULL;
+  SCompactDbReq compactReq = {0};
+
+  if (tDeserializeSCompactDbReq(pReq->pCont, pReq->contLen, &compactReq) != 0) {
+    code = TSDB_CODE_INVALID_MSG;
+    goto _OVER;
+  }
+
+  mInfo("db:%s, start to compact", compactReq.db);
+
+  pDb = mndAcquireDb(pMnode, compactReq.db);
+  if (pDb == NULL) {
+    code = TSDB_CODE_MND_RETURN_VALUE_NULL;
+    if (terrno != 0) code = terrno;
+    goto _OVER;
+  }
+
+  TAOS_CHECK_GOTO(mndCheckDbPrivilege(pMnode, pReq->info.conn.user, MND_OPER_COMPACT_DB, pDb), NULL, _OVER);
+
+  code = mndCompactDb(pMnode, pReq, pDb, compactReq.timeRange, compactReq.vgroupIds, compactReq.metaOnly);
+  if (code == 0) code = TSDB_CODE_ACTION_IN_PROGRESS;
+
+  {
+    SName name = {0};
+    (void)tNameFromString(&name, compactReq.db, T_NAME_ACCT | T_NAME_DB);
+    auditRecord(pReq, pMnode->clusterId, "compactDB", name.dbname, "", compactReq.sql, compactReq.sqlLen);
+  }
+
+_OVER:
+  if (code != 0 && code != TSDB_CODE_ACTION_IN_PROGRESS) {
+    mError("db:%s, failed to process compact db req since %s", compactReq.db, tstrerror(code));
+  }
+
+  mndReleaseDb(pMnode, pDb);
+  tFreeSCompactDbReq(&compactReq);
+  TAOS_RETURN(code);
+}
+
 static void mndCompactPullup(SMnode *pMnode) {
   int32_t code = 0;
   SSdb   *pSdb = pMnode->pSdb;
@@ -884,7 +1242,7 @@ static void mndCompactPullup(SMnode *pMnode) {
   }
   taosArrayDestroy(pArray);
 }
-#ifdef TD_ENTERPRISE
+
 static int32_t mndCompactDispatchAudit(SMnode *pMnode, SRpcMsg *pReq, SDbObj *pDb, STimeWindow *tw) {
   if (!tsEnableAudit || tsMonitorFqdn[0] == 0 || tsMonitorPort == 0) {
     return 0;
@@ -913,8 +1271,6 @@ static int32_t mndCompactDispatchAudit(SMnode *pMnode, SRpcMsg *pReq, SDbObj *pD
   return 0;
 }
 
-extern int32_t mndCompactDb(SMnode *pMnode, SRpcMsg *pReq, SDbObj *pDb, STimeWindow tw, SArray *vgroupIds,
-                            bool metaOnly);
 static int32_t mndCompactDispatch(SRpcMsg *pReq) {
   int32_t code = 0;
   SMnode *pMnode = pReq->info.node;
@@ -987,14 +1343,11 @@ static int32_t mndCompactDispatch(SRpcMsg *pReq) {
   }
   return 0;
 }
-#endif
 
 static int32_t mndProcessCompactTimer(SRpcMsg *pReq) {
-#ifdef TD_ENTERPRISE
   mTrace("start to process compact timer");
   mndCompactPullup(pReq->info.node);
   TAOS_UNUSED(mndCompactDispatch(pReq));
-#endif
   return 0;
 }
 

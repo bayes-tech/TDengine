@@ -80,7 +80,21 @@ set(
     "src/tq/tqStreamNotify.c"
 )
 
+# Community (open-source) data-compact implementation. When the enterprise
+# vnode plugins are enabled they provide these symbols instead.
+if(NOT TD_VNODE_PLUGINS)
+    list(
+        APPEND
+        VNODE_SOURCE_FILES
+        "src/vnd/vnodeCompact.c"
+        "src/meta/metaCompact.c"
+    )
+endif()
+
 aux_source_directory("src/tsdb/" TSDB_SOURCE_FILES)
+if(TD_VNODE_PLUGINS)
+    list(FILTER TSDB_SOURCE_FILES EXCLUDE REGEX "tsdbCompact")
+endif()
 list(
     APPEND
     VNODE_SOURCE_FILES

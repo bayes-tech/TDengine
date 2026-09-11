@@ -18,10 +18,8 @@
 #include "vmInt.h"
 
 extern taos_counter_t *tsInsertCounter;
-#ifdef TD_ENTERPRISE
-// Implemented in enterprise/src/plugins/vnode/src/vnodeCompact.c
+// Implemented in source/dnode/vnode/src/vnd/vnodeCompact.c
 extern int32_t vnodeGetCompactProgress(SVnode *pVnode, int32_t compactId, SQueryCompactProgressRsp *pRsp);
-#endif
 
 void vmGetVnodeLoads(SVnodeMgmt *pMgmt, SMonVloadInfo *pInfo, bool isReset) {
   pInfo->pVloads = taosArrayInit(pMgmt->state.totalVnodes, sizeof(SVnodeLoad));
@@ -1050,7 +1048,6 @@ int32_t vmProcessDnodeQueryCompactProgressReq(SVnodeMgmt *pMgmt, SRpcMsg *pMsg) 
       vmReleaseVnode(pMgmt, pVnode);
       continue;
     }
-#ifdef TD_ENTERPRISE
     SQueryCompactProgressRsp vnodeRsp = {0};
     vnodeRsp.dnodeId = pMgmt->pData->dnodeId;
     if (vnodeGetCompactProgress(pVnode->pImpl, req.compactId, &vnodeRsp) == 0 && vnodeRsp.compactId != 0) {
@@ -1058,7 +1055,6 @@ int32_t vmProcessDnodeQueryCompactProgressReq(SVnodeMgmt *pMgmt, SRpcMsg *pMsg) 
         dError("dnode:%d, vgId:%d, failed to push compact progress", pMgmt->pData->dnodeId, pVnode->vgId);
       }
     }
-#endif
     vmReleaseVnode(pMgmt, pVnode);
   }
   taosMemoryFree(ppVnodes);

@@ -818,9 +818,7 @@ int32_t tsdbDisableAndCancelAllBgTask(STsdb *pTsdb) {
   }
   taosArrayDestroy(asyncTasks);
 
-#ifdef TD_ENTERPRISE
   tsdbStopAllCompTask(pTsdb);
-#endif
   return 0;
 }
 
@@ -1297,10 +1295,6 @@ int32_t tsdbFileSetReaderOpen(void *pVnode, struct SFileSetReader **ppReader) {
 }
 
 extern bool tsdbShouldCompact(const STFileSet *pFileSet, int32_t vgId);
-
-#ifndef TD_ENTERPRISE
-bool tsdbShouldCompact(const STFileSet *pFileSet, int32_t vgId) { return false; }
-#endif
 
 static int32_t tsdbFileSetReaderNextNoLock(struct SFileSetReader *pReader) {
   STsdb  *pTsdb = pReader->pTsdb;

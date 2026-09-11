@@ -818,11 +818,9 @@ int32_t vnodeProcessWriteMsg(SVnode *pVnode, SRpcMsg *pMsg, int64_t ver, SRpcMsg
     case TDMT_SYNC_CONFIG_CHANGE:
       vnodeProcessConfigChangeReq(pVnode, ver, pReq, len, pRsp);
       break;
-#ifdef TD_ENTERPRISE
     case TDMT_VND_KILL_COMPACT:
       vnodeProcessKillCompactReq(pVnode, ver, pReq, len, pRsp);
       break;
-#endif
     /* ARB */
     case TDMT_VND_ARB_CHECK_SYNC:
       vnodeProcessArbCheckSyncReq(pVnode, pReq, len, pRsp);
@@ -946,10 +944,8 @@ int32_t vnodeProcessFetchMsg(SVnode *pVnode, SRpcMsg *pMsg, SQueueInfo *pInfo) {
       return vnodeGetVSubtablesMeta(pVnode, pMsg);
     case TDMT_VND_VSTB_REF_DBS:
       return vnodeGetVStbRefDbs(pVnode, pMsg);
-#ifdef TD_ENTERPRISE
     case TDMT_VND_QUERY_COMPACT_PROGRESS:
       return vnodeQueryCompactProgress(pVnode, pMsg);
-#endif
       //    case TDMT_VND_TMQ_CONSUME:
       //      return tqProcessPollReq(pVnode->pTq, pMsg);
 #ifdef USE_TQ
@@ -2772,7 +2768,3 @@ _OVER:
   return code;
 }
 
-#ifndef TD_ENTERPRISE
-int32_t vnodeAsyncCompact(SVnode *pVnode, int64_t ver, void *pReq, int32_t len, SRpcMsg *pRsp) { return 0; }
-int32_t tsdbAsyncCompact(STsdb *tsdb, const STimeWindow *tw, bool sync) { return 0; }
-#endif
