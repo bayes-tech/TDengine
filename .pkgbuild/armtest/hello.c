@@ -1,0 +1,3 @@
+#include <stdio.h>
+#include <stdlib.h>
+int main(){printf("hello arm64\n");return 0;}

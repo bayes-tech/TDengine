@@ -73,6 +73,13 @@ cd "${top_dir}"
 cp "${script_dir}/install.sh" "${install_dir}/install.sh"
 chmod a+x "${install_dir}/install.sh"
 
+# start-all.sh / stop-all.sh ship only from the sibling enterprise repo; install.sh
+# copies them unguarded and runs under `set -e`, so an OSS-only package aborts there.
+sed -i \
+  -e 's|cp "${script_dir}/start-all.sh" "${install_main_dir}/bin"|[ -f "${script_dir}/start-all.sh" ] \&\& cp "${script_dir}/start-all.sh" "${install_main_dir}/bin" \|\| :|' \
+  -e 's|cp "${script_dir}/stop-all.sh" "${install_main_dir}/bin"|[ -f "${script_dir}/stop-all.sh" ] \&\& cp "${script_dir}/stop-all.sh" "${install_main_dir}/bin" \|\| :|' \
+  "${install_dir}/install.sh"
+
 # ---- driver libs (top level, next to install.sh) -------------------------
 mkdir -p "${install_dir}/driver"
 cp "${build_dir}/lib/libtaos.so"       "${install_dir}/driver/libtaos.so.${version}"
