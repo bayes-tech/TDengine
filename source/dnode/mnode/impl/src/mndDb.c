@@ -73,10 +73,7 @@ static void    mndCancelGetNextDb(SMnode *pMnode, void *pIter);
 static int32_t mndProcessGetDbCfgReq(SRpcMsg *pReq);
 
 #ifndef TD_ENTERPRISE
-int32_t mndProcessCompactDbReq(SRpcMsg *pReq) {
-  mError("failed to process compact db req since %s", tstrerror(TSDB_CODE_OPS_NOT_SUPPORT));
-  return TSDB_CODE_OPS_NOT_SUPPORT;
-}
+int32_t mndProcessCompactDbReq(SRpcMsg *pReq);
 #endif
 
 int32_t mndInitDb(SMnode *pMnode) {

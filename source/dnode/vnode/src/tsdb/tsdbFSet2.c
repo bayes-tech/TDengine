@@ -280,6 +280,9 @@ int32_t tsdbTFileSetToJson(const STFileSet *fset, cJSON *json) {
   if (cJSON_AddNumberToObject(json, "last compact", fset->lastCompact) == NULL) {
     return TSDB_CODE_OUT_OF_MEMORY;
   }
+  if (cJSON_AddNumberToObject(json, "last compact cid", fset->lastCompactCid) == NULL) {
+    return TSDB_CODE_OUT_OF_MEMORY;
+  }
 
   if (cJSON_AddNumberToObject(json, "last commit", fset->lastCommit) == NULL) {
     return TSDB_CODE_OUT_OF_MEMORY;
@@ -355,6 +358,9 @@ int32_t tsdbJsonToTFileSet(STsdb *pTsdb, const cJSON *json, STFileSet **fset) {
   } else {
     (*fset)->lastCompact = 0;
   }
+
+  item1 = cJSON_GetObjectItem(json, "last compact cid");
+  (*fset)->lastCompactCid = cJSON_IsNumber(item1) ? item1->valuedouble : 0;
 
   item1 = cJSON_GetObjectItem(json, "last commit");
   if (cJSON_IsNumber(item1)) {
@@ -527,6 +533,7 @@ int32_t tsdbTFileSetApplyEdit(STsdb *pTsdb, const STFileSet *fset1, STFileSet *f
   }
 
   fset2->lastCompact = fset1->lastCompact;
+  fset2->lastCompactCid = fset1->lastCompactCid;
   fset2->lastCommit = fset1->lastCommit;
   fset2->lastMigrate = fset1->lastMigrate;
   fset2->lastRollup = fset1->lastRollup;
@@ -591,6 +598,7 @@ int32_t tsdbTFileSetInitCopy(STsdb *pTsdb, const STFileSet *fset1, STFileSet **f
   }
 
   (*fset)->lastCompact = fset1->lastCompact;
+  (*fset)->lastCompactCid = fset1->lastCompactCid;
   (*fset)->lastCommit = fset1->lastCommit;
   (*fset)->lastMigrate = fset1->lastMigrate;
   (*fset)->lastRollup = fset1->lastRollup;
@@ -692,6 +700,7 @@ int32_t tsdbTFileSetInitRef(STsdb *pTsdb, const STFileSet *fset1, STFileSet **fs
   }
 
   (*fset)->lastCompact = fset1->lastCompact;
+  (*fset)->lastCompactCid = fset1->lastCompactCid;
   (*fset)->lastCommit = fset1->lastCommit;
   (*fset)->lastMigrate = fset1->lastMigrate;
   (*fset)->lastRollup = fset1->lastRollup;

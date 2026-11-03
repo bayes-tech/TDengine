@@ -26,6 +26,9 @@ extern "C" {
 
 int32_t mndInitCompact(SMnode *pMnode);
 void    mndCleanupCompact(SMnode *pMnode);
+#ifndef TD_ENTERPRISE
+int32_t mndDeferCompactReq(SMnode *pMnode, const SRpcMsg *pReq);
+#endif
 
 void    tFreeCompactObj(SCompactObj *pCompact);
 int32_t tSerializeSCompactObj(void *buf, int32_t bufLen, const SCompactObj *pObj);

@@ -1181,7 +1181,8 @@ int32_t vnodeProcessWriteMsg(SVnode *pVnode, SRpcMsg *pMsg, int64_t ver, SRpcMsg
       vnodeProcessDropIndexReq(pVnode, ver, pReq, len, pRsp);
       break;
     case TDMT_VND_COMPACT:
-      vnodeProcessCompactVnodeReq(pVnode, ver, pReq, len, pRsp);
+      code = vnodeProcessCompactVnodeReq(pVnode, ver, pReq, len, pRsp);
+      if (code) pRsp->code = code;
       goto _exit;
     case TDMT_VND_SCAN:
       vnodeProcessScanVnodeReq(pVnode, ver, pReq, len, pRsp);
@@ -1189,11 +1190,10 @@ int32_t vnodeProcessWriteMsg(SVnode *pVnode, SRpcMsg *pMsg, int64_t ver, SRpcMsg
     case TDMT_SYNC_CONFIG_CHANGE:
       vnodeProcessConfigChangeReq(pVnode, ver, pReq, len, pRsp);
       break;
-#ifdef TD_ENTERPRISE
     case TDMT_VND_KILL_COMPACT:
-      vnodeProcessKillCompactReq(pVnode, ver, pReq, len, pRsp);
+      code = vnodeProcessKillCompactReq(pVnode, ver, pReq, len, pRsp);
+      if (code) pRsp->code = code;
       break;
-#endif
     case TDMT_VND_KILL_SCAN:
       vnodeProcessKillScanReq(pVnode, ver, pReq, len, pRsp);
       break;
@@ -1391,10 +1391,10 @@ int32_t vnodeProcessFetchMsg(SVnode *pVnode, SRpcMsg *pMsg, SQueueInfo *pInfo) {
       return vnodeGetVTbTagCond(pVnode, pMsg, true);
     case TDMT_VND_QUERY_SCAN_PROGRESS:
       return vnodeQueryScanProgress(pVnode, pMsg);
-#ifdef TD_ENTERPRISE
     case TDMT_VND_QUERY_COMPACT_PROGRESS:
       return vnodeQueryCompactProgress(pVnode, pMsg);
 
+#ifdef TD_ENTERPRISE
     case TDMT_VND_LIST_SSMIGRATE_FILESETS:
       return vnodeListSsMigrateFileSets(pVnode, pMsg);
 
@@ -4863,8 +4863,3 @@ _OVER:
   tFreeSVArbCheckSyncReq(&syncReq);
   return code;
 }
-
-#ifndef TD_ENTERPRISE
-int32_t vnodeAsyncCompact(SVnode *pVnode, int64_t ver, void *pReq, int32_t len, SRpcMsg *pRsp) { return 0; }
-int32_t tsdbAsyncCompact(STsdb *tsdb, const STimeWindow *tw, ETsdbOpType type, bool force) { return 0; }
-#endif

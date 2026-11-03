@@ -708,6 +708,9 @@ static int32_t edit_fs(STFileSystem *fs, const TFileOpArray *opArray, EFEditT et
         fset->lastCommit = now;
       } else if (etype == TSDB_FEDIT_COMPACT) {
         fset->lastCompact = now;
+#ifndef TD_ENTERPRISE
+        fset->lastCompactCid = op->compactCid;
+#endif
       } else if (etype == TSDB_FEDIT_SSMIGRATE) {
         fset->lastMigrate = now;
       } else if (etype == TSDB_FEDIT_ROLLUP) {
@@ -804,6 +807,10 @@ int32_t tsdbDisableAndCancelAllBgTask(STsdb *pTsdb) {
   }
 
   (void)taosThreadMutexUnlock(&pTsdb->mutex);
+
+#ifndef TD_ENTERPRISE
+  tsdbStopAllCompTask(pTsdb);
+#endif
 
   // destroy all channels
   for (int32_t k = 0; k < 2; k++) {
@@ -1410,10 +1417,7 @@ int32_t tsdbFileSetGetEntryField(struct SFileSetReader *pReader, const char *fie
 
   fieldName = "should_compact";
   if (strncmp(field, fieldName, strlen(fieldName) + 1) == 0) {
-    *(bool *)value = false;
-#ifdef TD_ENTERPRISE
     *(bool *)value = tsdbShouldCompact(pReader->pFileSet, pReader->pTsdb->pVnode->config.vgId, 0, TSDB_OPTR_NORMAL);
-#endif
     return TSDB_CODE_SUCCESS;
   }
 

@@ -75,6 +75,7 @@ void    tsdbSttLvlClear(SSttLvl **lvl);
 struct STFileOp {
   tsdb_fop_t optype;
   int32_t    fid;
+  int64_t    compactCid;  // output generation of a full file-set rewrite
   STFile     of;  // old file state
   STFile     nf;  // new file state
 };
@@ -96,6 +97,7 @@ struct STFileSet {
   STFileObj   *farr[TSDB_FTYPE_MAX];  // file array
   TSttLvlArray lvlArr[1];             // level array
   TSKEY        lastCompact;
+  int64_t      lastCompactCid;
   TSKEY        lastCommit;
   TSKEY        lastMigrate;
   TSKEY        lastRollup;  // rollup only if lastRollup > lastCommit or expLevel increased

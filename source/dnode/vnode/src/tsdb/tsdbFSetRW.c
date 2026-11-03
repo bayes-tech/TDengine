@@ -210,8 +210,10 @@ int32_t tsdbFSetWriterClose(SFSetWriter **writer, bool abort, TFileOpArray *fopA
 
   // end
   if (!writer[0]->config->toSttOnly) {
-    code = tsdbFSetWriteTableDataEnd(writer[0]);
-    TSDB_CHECK_CODE(code, lino, _exit);
+    if (!abort) {
+      code = tsdbFSetWriteTableDataEnd(writer[0]);
+      TSDB_CHECK_CODE(code, lino, _exit);
+    }
 
     code = tsdbDataFileWriterClose(&writer[0]->dataWriter, abort, fopArr);
     TSDB_CHECK_CODE(code, lino, _exit);
@@ -229,6 +231,7 @@ int32_t tsdbFSetWriterClose(SFSetWriter **writer, bool abort, TFileOpArray *fopA
   }
   tDestroyTSchema(writer[0]->skmRow->pTSchema);
   tDestroyTSchema(writer[0]->skmTb->pTSchema);
+  taosHashCleanup(writer[0]->pColCmprObj);
   taosMemoryFree(writer[0]);
   writer[0] = NULL;
 

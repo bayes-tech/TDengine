@@ -26,10 +26,7 @@
 
 extern taos_counter_t *tsInsertCounter;
 
-#ifdef TD_ENTERPRISE
-// Forward declaration for enterprise function
 extern int32_t vnodeGetCompactProgress(SVnode *pVnode, int32_t compactId, SQueryCompactProgressRsp *pRsp);
-#endif
 
 // Forward declaration for function defined in metrics.c
 extern int32_t addWriteMetrics(int32_t vgId, int32_t dnodeId, int64_t clusterId, const char *dnodeEp,
@@ -2094,7 +2091,6 @@ int32_t vmProcessDnodeQueryCompactProgressReq(SVnodeMgmt *pMgmt, SRpcMsg *pMsg) 
       vmReleaseVnode(pMgmt, pVnode);
       continue;
     }
-#ifdef TD_ENTERPRISE
     SQueryCompactProgressRsp vnodeRsp = {0};
     vnodeRsp.dnodeId = pMgmt->pData->dnodeId;
     if (vnodeGetCompactProgress(pVnode->pImpl, req.compactId, &vnodeRsp) == 0 && vnodeRsp.compactId != 0) {
@@ -2102,7 +2098,6 @@ int32_t vmProcessDnodeQueryCompactProgressReq(SVnodeMgmt *pMgmt, SRpcMsg *pMsg) 
         dError("dnode:%d, vgId:%d, failed to push compact progress", pMgmt->pData->dnodeId, pVnode->vgId);
       }
     }
-#endif
     vmReleaseVnode(pMgmt, pVnode);
   }
   taosMemoryFree(ppVnodes);

@@ -96,8 +96,8 @@ int32_t tsdbOpen(SVnode *pVnode, STsdb **ppTsdb, const char *dir, STsdbKeepCfg *
   code = tsdbOpenCache(pTsdb);
   TSDB_CHECK_CODE(code, lino, _exit);
 
-#ifdef TD_ENTERPRISE
   TAOS_CHECK_GOTO(tsdbOpenCompMonitor(pTsdb), &lino, _exit);
+#ifdef TD_ENTERPRISE
   TAOS_CHECK_GOTO(tsdbOpenSsMigrateMonitor(pTsdb), &lino, _exit);
 #endif
 
@@ -109,6 +109,9 @@ _exit:
     tsdbError("vgId:%d %s failed at %s:%d since %s, path:%s", TD_VID(pVnode), __func__, __FILE__, lino, tstrerror(code),
               pTsdb->path);
     tsdbCloseFS(&pTsdb->pFS);
+#ifndef TD_ENTERPRISE
+    tsdbCloseCompMonitor(pTsdb);
+#endif
     (void)taosThreadRwlockDestroy(&pTsdb->snapStatLock);
     (void)taosThreadMutexDestroy(&pTsdb->mutex);
     taosMemoryFree(pTsdb);
@@ -136,9 +139,7 @@ void tsdbClose(STsdb **pTsdb) {
 
     tsdbCloseFS(&(*pTsdb)->pFS);
     tsdbCloseCache(*pTsdb);
-#ifdef TD_ENTERPRISE
     tsdbCloseCompMonitor(*pTsdb);
-#endif
     tsdbCloseSsMigrateMonitor(*pTsdb);
     tsdbCloseRetentionMonitor(*pTsdb);
     tsdbScanMonitorClose(*pTsdb);

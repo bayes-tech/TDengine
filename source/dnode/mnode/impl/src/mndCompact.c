@@ -54,7 +54,57 @@ int32_t mndInitCompact(SMnode *pMnode) {
   return sdbSetTable(pMnode->pSdb, table);
 }
 
-void mndCleanupCompact(SMnode *pMnode) { mDebug("mnd compact cleanup"); }
+#ifndef TD_ENTERPRISE
+int32_t mndDeferCompactReq(SMnode *mnode, const SRpcMsg *req) {
+  if (mnode->compactWaiters == NULL) {
+    mnode->compactWaiters = taosArrayInit(4, sizeof(SRpcMsg));
+    if (mnode->compactWaiters == NULL) return terrno;
+  }
+  for (int32_t i = 0; i < taosArrayGetSize(mnode->compactWaiters); ++i) {
+    SRpcMsg *queued = taosArrayGet(mnode->compactWaiters, i);
+    if (queued->info.handle == req->info.handle && queued->info.refId == req->info.refId &&
+        queued->info.seqNum == req->info.seqNum) return TSDB_CODE_ACTION_IN_PROGRESS;
+  }
+  SRpcMsg copy = *req;
+  copy.pCont = rpcMallocCont(req->contLen);
+  if (copy.pCont == NULL) return terrno;
+  memcpy(copy.pCont, req->pCont, req->contLen);
+  if (taosArrayPush(mnode->compactWaiters, &copy) == NULL) {
+    rpcFreeCont(copy.pCont);
+    return terrno;
+  }
+  return TSDB_CODE_ACTION_IN_PROGRESS;
+}
+
+static void mndResumeCompactWaiters(SMnode *mnode) {
+  SArray *waiters = mnode->compactWaiters;
+  mnode->compactWaiters = NULL;
+  for (int32_t i = 0; i < taosArrayGetSize(waiters); ++i) {
+    SRpcMsg *req = taosArrayGet(waiters, i);
+    int32_t code = tmsgPutToQueue(&mnode->msgCb, WRITE_QUEUE, req);
+    if (code) {
+      SRpcMsg rsp = {.info = req->info, .msgType = req->msgType + 1, .code = code};
+      tmsgSendRsp(&rsp);
+      rpcFreeCont(req->pCont);
+    }
+  }
+  taosArrayDestroy(waiters);
+}
+#endif
+
+void mndCleanupCompact(SMnode *pMnode) {
+#ifndef TD_ENTERPRISE
+  for (int32_t i = 0; i < taosArrayGetSize(pMnode->compactWaiters); ++i) {
+    SRpcMsg *req = taosArrayGet(pMnode->compactWaiters, i);
+    SRpcMsg rsp = {.info = req->info, .msgType = req->msgType + 1, .code = TSDB_CODE_MNODE_STOPPED};
+    tmsgSendRsp(&rsp);
+    rpcFreeCont(req->pCont);
+  }
+  taosArrayDestroy(pMnode->compactWaiters);
+  pMnode->compactWaiters = NULL;
+#endif
+  mDebug("mnd compact cleanup");
+}
 
 void tFreeCompactObj(SCompactObj *pCompact) {}
 
@@ -1167,9 +1217,12 @@ static int32_t mndCompactDispatch(SRpcMsg *pReq) {
 #endif
 
 static int32_t mndProcessCompactTimer(SRpcMsg *pReq) {
-#ifdef TD_ENTERPRISE
   mTrace("start to process compact timer");
   mndCompactPullup(pReq->info.node);
+#ifndef TD_ENTERPRISE
+  mndResumeCompactWaiters(pReq->info.node);
+#endif
+#ifdef TD_ENTERPRISE
   TAOS_UNUSED(mndCompactDispatch(pReq));
 #endif
   return 0;

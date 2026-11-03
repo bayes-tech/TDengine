@@ -208,6 +208,7 @@ typedef struct SMnode {
   SSyncMgmt      syncMgmt;
   SEncryptMgmt   encryptMgmt;
   STxnMgmt       txnMgmt;
+  SArray        *compactWaiters;  // queued COMPACT requests, owned by the write queue
   SGrantInfo     grant;
   MndMsgFp       msgFp[TDMT_MAX];
   MndMsgFpExt    msgFpExt[TDMT_MAX];

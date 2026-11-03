@@ -41,6 +41,7 @@ set(
     "src/vnd/vnodeStream.c"
     "src/vnd/vnodeStreamVTable.c"
     "src/vnd/vnodeScan.c"
+    "src/vnd/vnodeCompact.c"
     "src/vnd/vnodeTxn.c"
     "src/vnd/vnodeTxnWalMgr.c"
     # meta
@@ -49,6 +50,7 @@ set(
     "src/meta/metaSma.c"
     "src/meta/metaQuery.c"
     "src/meta/metaCommit.c"
+    "src/meta/metaCompact.c"
     "src/meta/metaEntry.c"
     "src/meta/metaSnapshot.c"
     "src/meta/metaCache.c"

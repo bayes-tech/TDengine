@@ -788,8 +788,19 @@ struct SDataFileWriter {
 };
 
 static int32_t tsdbDataFileWriterCloseAbort(SDataFileWriter *writer) {
-  tsdbError("vgId:%d %s failed at %s:%d since %s", TD_VID(writer->config->tsdb->pVnode), __func__, __FILE__, __LINE__,
-            "not implemented");
+  for (int32_t i = 0; i < TSDB_FTYPE_MAX; ++i) {
+    if (writer->fd[i] == NULL) continue;
+    char path[TSDB_FILENAME_LEN];
+    tsdbTFileName(writer->config->tsdb, &writer->files[i], path);
+    tsdbCloseFile(&writer->fd[i]);
+    // Data/SMA can be append-only files shared with the committed file set.
+    // Their unpublished tail is harmless and will be reclaimed by COMPACT.
+    // Newly created files have no committed readers and can be removed now.
+    if (!writer->config->files[i].exist ||
+        writer->files[i].cid != writer->config->files[i].file.cid) {
+      tsdbRemoveFile(path);
+    }
+  }
   return 0;
 }
 

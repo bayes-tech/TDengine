@@ -25228,7 +25228,6 @@ static int32_t translateKillBackup(STranslateContext* pCxt, SKillBackupStmt* pSt
 }
 
 static int32_t translateCompactDb(STranslateContext* pCxt, SCompactDatabaseStmt* pStmt) {
-  PAR_ENTERPRISE_ONLY(pCxt, "COMPACT DATABASE");
   SCompactDbReq compactReq = {
       .metaOnly = pStmt->metaOnly,
       .force = pStmt->force,
@@ -25362,7 +25361,6 @@ static int32_t translateVgroupList(STranslateContext* pCxt, SNodeList* vgroupLis
 }
 
 static int32_t translateCompactVgroups(STranslateContext* pCxt, SCompactVgroupsStmt* pStmt) {
-  PAR_ENTERPRISE_ONLY(pCxt, "COMPACT VGROUPS");
   int32_t       code = TSDB_CODE_SUCCESS;
   SName         name;
   SCompactDbReq req = {
@@ -25462,7 +25460,6 @@ static int32_t translateKillConnection(STranslateContext* pCxt, SKillStmt* pStmt
 }
 
 static int32_t translateKillCompact(STranslateContext* pCxt, SKillStmt* pStmt) {
-  PAR_ENTERPRISE_ONLY(pCxt, "KILL COMPACT");
   SKillCompactReq killReq = {0};
   killReq.compactId = pStmt->targetId;
   killReq.force = pStmt->force ? 1 : 0;

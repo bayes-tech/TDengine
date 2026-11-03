@@ -21,6 +21,9 @@
 #include "tsdb.h"
 #include "vnd.h"
 #include "stream.h"
+#ifndef TD_ENTERPRISE
+#include "../tsdb/tsdbCompact.h"
+#endif
 
 #define BATCH_ENABLE 0
 
@@ -730,6 +733,10 @@ static void vnodeRestoreFinish(const SSyncFSM *pFsm, const SyncIndex commitIdx) 
 
   walApplyVer(pVnode->pWal, commitIdx);
   pVnode->restored = true;
+#ifndef TD_ENTERPRISE
+  int32_t code = tsdbResumeCompact(pVnode->pTsdb);
+  if (code) vError("vgId:%d, failed to resume compact since %s", vgId, tstrerror(code));
+#endif
 }
 
 static void vnodeBecomeFollower(const SSyncFSM *pFsm) {
