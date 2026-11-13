@@ -18,6 +18,10 @@
 #include "cos.h"
 #include "tencrypt.h"
 #include "tsdbFS2.h"
+#ifndef TD_ENTERPRISE
+#include "meta.h"
+#include "tsdbCompact.h"
+#endif
 #include "tsdbUpgrade.h"
 #include "vnd.h"
 
@@ -710,6 +714,7 @@ static int32_t edit_fs(STFileSystem *fs, const TFileOpArray *opArray, EFEditT et
         fset->lastCompact = now;
 #ifndef TD_ENTERPRISE
         fset->lastCompactCid = op->compactCid;
+        fset->lastCompactMetaVersion = op->compactMetaVersion;
 #endif
       } else if (etype == TSDB_FEDIT_SSMIGRATE) {
         fset->lastMigrate = now;
@@ -777,7 +782,9 @@ _exit:
 }
 
 static void tsdbFSSetBlockCommit(STFileSet *fset, bool block);
+#ifdef TD_ENTERPRISE
 extern void tsdbStopAllCompTask(STsdb *tsdb);
+#endif
 extern void tsdbStopAllRetentionTask(STsdb *tsdb);
 
 int32_t tsdbDisableAndCancelAllBgTask(STsdb *pTsdb) {
@@ -789,28 +796,32 @@ int32_t tsdbDisableAndCancelAllBgTask(STsdb *pTsdb) {
 
   (void)taosThreadMutexLock(&pTsdb->mutex);
 
-  // disable
-  pTsdb->bgTaskDisabled = true;
-
   // collect channel
   STFileSet *fset;
   TARRAY2_FOREACH(fs->fSetArr, fset) {
     if (taosArrayPush(asyncTasks, &fset->mergeTask) == NULL       //
+#ifdef TD_ENTERPRISE
         || taosArrayPush(asyncTasks, &fset->compactTask) == NULL  //
+#endif
         || taosArrayPush(asyncTasks, &fset->retentionTask) == NULL
         || taosArrayPush(asyncTasks, &fset->migrateTask) == NULL) {
       taosArrayDestroy(asyncTasks);
       (void)taosThreadMutexUnlock(&pTsdb->mutex);
       return terrno;
     }
-    tsdbFSSetBlockCommit(fset, false);
   }
 
-  (void)taosThreadMutexUnlock(&pTsdb->mutex);
-
 #ifndef TD_ENTERPRISE
-  tsdbStopAllCompTask(pTsdb);
+  int32_t code = tsdbPauseCompact(pTsdb, asyncTasks);
+  if (code) {
+    taosArrayDestroy(asyncTasks);
+    (void)taosThreadMutexUnlock(&pTsdb->mutex);
+    return code;
+  }
 #endif
+  pTsdb->bgTaskDisabled = true;
+  TARRAY2_FOREACH(fs->fSetArr, fset) { tsdbFSSetBlockCommit(fset, false); }
+  (void)taosThreadMutexUnlock(&pTsdb->mutex);
 
   // destroy all channels
   for (int32_t k = 0; k < 2; k++) {
@@ -836,6 +847,12 @@ void tsdbEnableBgTask(STsdb *pTsdb) {
   (void)taosThreadMutexLock(&pTsdb->mutex);
   pTsdb->bgTaskDisabled = false;
   (void)taosThreadMutexUnlock(&pTsdb->mutex);
+#ifndef TD_ENTERPRISE
+  int32_t code = tsdbResumeCompact(pTsdb);
+  if (code) {
+    tsdbError("vgId:%d, failed to resume compact since %s", TD_VID(pTsdb->pVnode), tstrerror(code));
+  }
+#endif
 }
 
 void tsdbCloseFS(STFileSystem **fs) {
@@ -1377,7 +1394,9 @@ int32_t tsdbFileSetReaderNext(struct SFileSetReader *pReader) {
   return code;
 }
 
+#ifdef TD_ENTERPRISE
 extern bool tsdbShouldCompact(STFileSet *fset, int32_t vgId, int32_t expLevel, ETsdbOpType type);
+#endif
 int32_t tsdbFileSetGetEntryField(struct SFileSetReader *pReader, const char *field, void *value) {
   const char *fieldName;
 
@@ -1417,7 +1436,13 @@ int32_t tsdbFileSetGetEntryField(struct SFileSetReader *pReader, const char *fie
 
   fieldName = "should_compact";
   if (strncmp(field, fieldName, strlen(fieldName) + 1) == 0) {
+#ifdef TD_ENTERPRISE
     *(bool *)value = tsdbShouldCompact(pReader->pFileSet, pReader->pTsdb->pVnode->config.vgId, 0, TSDB_OPTR_NORMAL);
+#else
+    int64_t metaVersion;
+    TAOS_CHECK_RETURN(metaGetTableDbVersion(pReader->pTsdb->pVnode->pMeta, &metaVersion));
+    *(bool *)value = tsdbShouldCompact(pReader->pFileSet, metaVersion);
+#endif
     return TSDB_CODE_SUCCESS;
   }
 

@@ -284,6 +284,12 @@ int32_t tsdbTFileSetToJson(const STFileSet *fset, cJSON *json) {
     return TSDB_CODE_OUT_OF_MEMORY;
   }
 
+#ifndef TD_ENTERPRISE
+  if (cJSON_AddNumberToObject(json, "last compact meta version", fset->lastCompactMetaVersion) == NULL) {
+    return TSDB_CODE_OUT_OF_MEMORY;
+  }
+#endif
+
   if (cJSON_AddNumberToObject(json, "last commit", fset->lastCommit) == NULL) {
     return TSDB_CODE_OUT_OF_MEMORY;
   }
@@ -361,6 +367,11 @@ int32_t tsdbJsonToTFileSet(STsdb *pTsdb, const cJSON *json, STFileSet **fset) {
 
   item1 = cJSON_GetObjectItem(json, "last compact cid");
   (*fset)->lastCompactCid = cJSON_IsNumber(item1) ? item1->valuedouble : 0;
+
+#ifndef TD_ENTERPRISE
+  item1 = cJSON_GetObjectItem(json, "last compact meta version");
+  (*fset)->lastCompactMetaVersion = cJSON_IsNumber(item1) ? item1->valuedouble : -1;
+#endif
 
   item1 = cJSON_GetObjectItem(json, "last commit");
   if (cJSON_IsNumber(item1)) {
@@ -534,6 +545,9 @@ int32_t tsdbTFileSetApplyEdit(STsdb *pTsdb, const STFileSet *fset1, STFileSet *f
 
   fset2->lastCompact = fset1->lastCompact;
   fset2->lastCompactCid = fset1->lastCompactCid;
+#ifndef TD_ENTERPRISE
+  fset2->lastCompactMetaVersion = fset1->lastCompactMetaVersion;
+#endif
   fset2->lastCommit = fset1->lastCommit;
   fset2->lastMigrate = fset1->lastMigrate;
   fset2->lastRollup = fset1->lastRollup;
@@ -599,6 +613,9 @@ int32_t tsdbTFileSetInitCopy(STsdb *pTsdb, const STFileSet *fset1, STFileSet **f
 
   (*fset)->lastCompact = fset1->lastCompact;
   (*fset)->lastCompactCid = fset1->lastCompactCid;
+#ifndef TD_ENTERPRISE
+  (*fset)->lastCompactMetaVersion = fset1->lastCompactMetaVersion;
+#endif
   (*fset)->lastCommit = fset1->lastCommit;
   (*fset)->lastMigrate = fset1->lastMigrate;
   (*fset)->lastRollup = fset1->lastRollup;
@@ -701,6 +718,9 @@ int32_t tsdbTFileSetInitRef(STsdb *pTsdb, const STFileSet *fset1, STFileSet **fs
 
   (*fset)->lastCompact = fset1->lastCompact;
   (*fset)->lastCompactCid = fset1->lastCompactCid;
+#ifndef TD_ENTERPRISE
+  (*fset)->lastCompactMetaVersion = fset1->lastCompactMetaVersion;
+#endif
   (*fset)->lastCommit = fset1->lastCommit;
   (*fset)->lastMigrate = fset1->lastMigrate;
   (*fset)->lastRollup = fset1->lastRollup;

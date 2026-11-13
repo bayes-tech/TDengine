@@ -9,7 +9,6 @@
 #include "meta.h"
 
 typedef struct {
-  int32_t fid;
   SVATaskID task;
   int64_t size;
 } SCompactTask;
@@ -18,6 +17,8 @@ struct SCompMonitor {
   SCompactVnodeReq req;
   SArray *tasks;
   int32_t killed;
+  int32_t paused;
+  bool statePending;
   int32_t total;
   int32_t finished;
   int64_t totalSize;
@@ -26,7 +27,10 @@ struct SCompMonitor {
   bool resume;
 };
 
-static bool compactCanceled(STsdb *tsdb) { return atomic_load_32(&tsdb->pCompMonitor->killed) != 0; }
+static bool compactCanceled(STsdb *tsdb) {
+  SCompMonitor *m = tsdb->pCompMonitor;
+  return atomic_load_32(&m->killed) || atomic_load_32(&m->paused);
+}
 
 static void compactStatePath(STsdb *tsdb, char *path) {
   vnodeGetPrimaryPath(tsdb->pVnode, false, path, TSDB_FILENAME_LEN);
@@ -53,12 +57,17 @@ static int32_t compactSaveState(STsdb *tsdb, bool pending) {
   code = 0;
   fd = taosOpenFile(tmp, TD_FILE_WRITE | TD_FILE_CREATE | TD_FILE_TRUNC);
   if (fd == NULL) { code = terrno; goto _exit; }
-  if (taosWriteFile(fd, buf, len + 1) != len + 1) { code = TAOS_SYSTEM_ERROR(ERRNO); goto _exit; }
+  int64_t written = taosWriteFile(fd, buf, len + 1);
+  if (written != len + 1) {
+    code = written < 0 ? terrno : TSDB_CODE_FAILED;
+    goto _exit;
+  }
   code = taosFsyncFile(fd);
   if (code) goto _exit;
   code = taosCloseFile(&fd);
   if (code) goto _exit;
   code = taosRenameFile(tmp, path);
+  if (code == 0) m->statePending = pending;
 _exit:
   if (fd) (void)taosCloseFile(&fd);
   taosMemoryFree(buf);
@@ -82,16 +91,13 @@ static int32_t compactLoadState(STsdb *tsdb) {
   code = tDeserializeSCompactVnodeReq(buf + 1, size - 1, &tsdb->pCompMonitor->req);
   if (code) return code;
   if (tsdb->pCompMonitor->req.dbUid != tsdb->pVnode->config.dbId) return TSDB_CODE_FILE_CORRUPTED;
-  tsdb->pCompMonitor->resume = buf[0] != 0;
-  // Do not report a recovered pending task as complete before scheduling it.
-  if (tsdb->pCompMonitor->resume) tsdb->pCompMonitor->total = 1;
+  tsdb->pCompMonitor->statePending = buf[0] != 0;
+  tsdb->pCompMonitor->resume = tsdb->pCompMonitor->statePending;
   return 0;
 }
 
-bool tsdbShouldCompact(STFileSet *fset, int32_t vgId, int32_t expLevel, ETsdbOpType type) {
-  // A dropped table changes metadata without committing a TSDB file. Always allow
-  // the first compact; FORCE covers subsequent metadata-only changes.
-  if (fset->lastCompact == 0 || fset->lastCompactCid == 0) return true;
+bool tsdbShouldCompact(STFileSet *fset, int64_t metaVersion) {
+  if (fset->lastCompactCid == 0 || fset->lastCompactMetaVersion != metaVersion) return true;
   // Commits can finish during the rewrite. Their STT generation differs from
   // this rewrite even when their commit timestamp precedes lastCompact.
   for (int32_t i = 0; i < TSDB_FTYPE_MAX; ++i) {
@@ -278,15 +284,18 @@ static int32_t compactFileSet(SCompactArg *arg) {
   SCompactor2 c = {.tsdb = tsdb, .szPage = tsdb->pVnode->config.tsdbPageSize};
   STFileSet *fset = NULL;
   bool acquired = false;
-  int32_t code = 0;
+  int64_t metaVersion;
+  int32_t code = metaGetTableDbVersion(tsdb->pVnode->pMeta, &metaVersion);
+  if (code) return code;
   (void)taosThreadMutexLock(&tsdb->mutex);
   if (!tsdb->bgTaskDisabled && !compactCanceled(tsdb)) {
     tsdbBeginTaskOnFileSet(tsdb, arg->fid, EVA_TASK_COMPACT, &fset);
     acquired = fset != NULL;
-    if (fset && (arg->force || tsdbShouldCompact(fset, TD_VID(tsdb->pVnode), 0, arg->type))) {
+    if (fset && (arg->force || tsdbShouldCompact(fset, metaVersion))) {
       code = tsdbTFileSetInitCopy(tsdb, fset, &c.fset);
     }
   }
+  if (tsdb->bgTaskDisabled || compactCanceled(tsdb)) code = TSDB_CODE_TSC_QUERY_CANCELLED;
   (void)taosThreadMutexUnlock(&tsdb->mutex);
   if (code || c.fset == NULL) goto _exit;
   c.cid = tsdbFSAllocEid(tsdb->pFS);
@@ -299,7 +308,10 @@ static int32_t compactFileSet(SCompactArg *arg) {
   if (code) goto _exit;
   compactCloseReaders(&c);
   STFileOp *op;
-  TARRAY2_FOREACH_PTR(c.fopArr, op) { op->compactCid = c.cid; }
+  TARRAY2_FOREACH_PTR(c.fopArr, op) {
+    op->compactCid = c.cid;
+    op->compactMetaVersion = metaVersion;
+  }
   if (compactCanceled(tsdb)) { code = TSDB_CODE_TSC_QUERY_CANCELLED; goto _exit; }
   code = tsdbFSEditBegin(tsdb->pFS, c.fopArr, TSDB_FEDIT_COMPACT);
   if (code) goto _exit;
@@ -341,7 +353,8 @@ static void compactTaskDone(SCompactArg *arg, bool finished) {
   STsdb *tsdb = arg->tsdb;
   (void)taosThreadMutexLock(&tsdb->mutex);
   SCompMonitor *m = tsdb->pCompMonitor;
-  if (!finished && !compactCanceled(tsdb)) m->resume = true;
+  finished = finished || atomic_load_32(&m->killed);
+  if (!finished) m->resume = true;
   for (int32_t i = 0; i < taosArrayGetSize(m->tasks); ++i) {
     SCompactTask *t = taosArrayGet(m->tasks, i);
     if (t->task.id == arg->taskid.id && t->task.async == arg->taskid.async) {
@@ -350,7 +363,7 @@ static void compactTaskDone(SCompactArg *arg, bool finished) {
       break;
     }
   }
-  if (m->finished == m->total && !m->resume && !tsdb->bgTaskDisabled) {
+  if (m->finished == m->total && !m->resume && m->statePending) {
     int32_t code = compactSaveState(tsdb, false);
     if (code) tsdbError("vgId:%d, failed to save compact completion since %s", TD_VID(tsdb->pVnode), tstrerror(code));
   }
@@ -359,11 +372,11 @@ static void compactTaskDone(SCompactArg *arg, bool finished) {
 }
 
 // Cancellation callbacks run outside the async scheduler's mutex.
-static void compactTaskCancel(void *arg) { compactTaskDone(arg, true); }
+static void compactTaskCancel(void *arg) { compactTaskDone(arg, false); }
 static int32_t compactTaskRun(void *ptr) {
   SCompactArg *arg = ptr;
   int32_t code = compactFileSet(arg);
-  compactTaskDone(arg, code == 0 || code == TSDB_CODE_TSC_QUERY_CANCELLED);
+  compactTaskDone(arg, code == 0);
   return code;
 }
 
@@ -381,7 +394,7 @@ static int32_t compactSchedule(STsdb *tsdb, const STimeWindow *tw, ETsdbOpType t
     arg->type = type;
     arg->force = force;
     // Reserve monitor space before exposing the task to worker threads.
-    SCompactTask task = {.fid = fset->fid, .size = tsdbTFileSetGetDataSize(fset)};
+    SCompactTask task = {.size = tsdbTFileSetGetDataSize(fset)};
     if (taosArrayPush(m->tasks, &task) == NULL) { taosMemoryFree(arg); return terrno; }
     int32_t code = vnodeAsync(COMPACT_TASK_ASYNC, EVA_PRIORITY_LOW, compactTaskRun, compactTaskCancel, arg, &arg->taskid);
     if (code) {
@@ -389,7 +402,6 @@ static int32_t compactSchedule(STsdb *tsdb, const STimeWindow *tw, ETsdbOpType t
       taosMemoryFree(arg);
       return code;
     }
-    fset->compactTask = arg->taskid;
     ((SCompactTask *)taosArrayGetLast(m->tasks))->task = arg->taskid;
     ++m->total;
     m->totalSize += task.size;
@@ -412,42 +424,57 @@ void tsdbCloseCompMonitor(STsdb *tsdb) {
   }
 }
 
-int32_t tsdbStartCompact(STsdb *tsdb, const SCompactVnodeReq *req) {
-  (void)taosThreadMutexLock(&tsdb->mutex);
+// The caller holds tsdb->mutex, including when retrying the current request.
+static int32_t compactStartLocked(STsdb *tsdb, const SCompactVnodeReq *req) {
   SCompMonitor *m = tsdb->pCompMonitor;
-  int32_t code = 0;
   bool same = m->req.compactId == req->compactId && m->req.compactStartTime == req->compactStartTime;
-  if (same && !m->resume) goto _exit;
-  if (taosArrayGetSize(m->tasks) || tsdb->bgTaskDisabled) { code = TSDB_CODE_NEED_RETRY; goto _exit; }
+  if (same && !m->resume) {
+    if (m->statePending && m->finished == m->total) return compactSaveState(tsdb, false);
+    return 0;
+  }
+  if (taosArrayGetSize(m->tasks) || tsdb->bgTaskDisabled || (!same && m->statePending)) {
+    return TSDB_CODE_NEED_RETRY;
+  }
+
+  SCompactVnodeReq previous = m->req;
   m->req = *req;
+  int32_t code = compactSaveState(tsdb, true);
+  if (code) {
+    m->req = previous;
+    return code;
+  }
+
   m->total = m->finished = 0;
   m->totalSize = m->finishedSize = 0;
   m->started = taosGetTimestampSec();
   atomic_store_32(&m->killed, 0);
-  code = compactSaveState(tsdb, true);
-  if (code) { m->resume = true; goto _exit; }
-  code = req->metaOnly ? 0 : compactSchedule(tsdb, &req->tw, TSDB_OPTR_NORMAL, req->force);
+  atomic_store_32(&m->paused, 0);
+  code = req->metaOnly ? 0 : compactSchedule(tsdb, &req->tw, req->optrType, req->force);
   m->resume = code != 0;
   if (code == 0 && m->total == 0) code = compactSaveState(tsdb, false);
-_exit:
+  return code;
+}
+
+int32_t tsdbStartCompact(STsdb *tsdb, const SCompactVnodeReq *req) {
+  (void)taosThreadMutexLock(&tsdb->mutex);
+  int32_t code = compactStartLocked(tsdb, req);
   (void)taosThreadMutexUnlock(&tsdb->mutex);
   return code;
 }
 
 int32_t tsdbAsyncCompact(STsdb *tsdb, const STimeWindow *tw, ETsdbOpType type, bool force) {
   SCompactVnodeReq req = {.dbUid = tsdb->pVnode->config.dbId,
-                          .tw = *tw, .force = force, .compactStartTime = taosGetTimestampMs()};
+                          .tw = *tw, .force = force, .optrType = type, .compactStartTime = taosGetTimestampMs()};
   return tsdbStartCompact(tsdb, &req);
 }
 
 int32_t tsdbResumeCompact(STsdb *tsdb) {
   if (!tsdb->pVnode->restored) return 0;
-  SCompactVnodeReq req;
   (void)taosThreadMutexLock(&tsdb->mutex);
-  bool resume = tsdb->pCompMonitor->resume;
-  req = tsdb->pCompMonitor->req;
+  SCompMonitor *m = tsdb->pCompMonitor;
+  int32_t code = m->statePending ? compactStartLocked(tsdb, &m->req) : 0;
   (void)taosThreadMutexUnlock(&tsdb->mutex);
-  return resume ? tsdbStartCompact(tsdb, &req) : 0;
+  return code;
 }
 
 void tsdbCompactGetProgress(STsdb *tsdb, SQueryCompactProgressRsp *rsp) {
@@ -463,9 +490,11 @@ void tsdbCompactGetProgress(STsdb *tsdb, SQueryCompactProgressRsp *rsp) {
   }
   rsp->compactId = m->req.compactId;
   rsp->vgId = TD_VID(tsdb->pVnode);
-  rsp->numberFileset = m->total + (m->resume ? 1 : 0);
+  bool pendingCompletion = m->statePending && m->total == m->finished;
+  rsp->numberFileset = m->total + (pendingCompletion ? 1 : 0);
   rsp->finished = m->finished;
   rsp->progress = m->finished == rsp->numberFileset ? 100 : (m->totalSize ? m->finishedSize * 100 / m->totalSize : 0);
+  if (rsp->finished < rsp->numberFileset) rsp->progress = TMIN(rsp->progress, 99);
   int64_t elapsed = taosGetTimestampSec() - m->started;
   rsp->remainingTime = rsp->progress > 0 ? elapsed * (100 - rsp->progress) / rsp->progress : 0;
   (void)taosThreadMutexUnlock(&tsdb->mutex);
@@ -475,18 +504,29 @@ int32_t tsdbKillCompact(STsdb *tsdb, int32_t compactId) {
   if (tsdb->pCompMonitor == NULL) return 0;
   int32_t code = 0;
   (void)taosThreadMutexLock(&tsdb->mutex);
-  if (compactId == 0 || tsdb->pCompMonitor->req.compactId == compactId) {
-    atomic_store_32(&tsdb->pCompMonitor->killed, 1);
-    SCompMonitor *m = tsdb->pCompMonitor;
-    m->resume = false;
-    // An I/O failure can leave an unfinished task with no running workers.
-    // KILL must also be able to clean up that state.
-    m->total = m->finished + taosArrayGetSize(m->tasks);
-    if (!tsdb->bgTaskDisabled) code = compactSaveState(tsdb, false);
+  SCompMonitor *m = tsdb->pCompMonitor;
+  if (m->req.compactId == compactId) {
+    if (m->statePending) code = compactSaveState(tsdb, false);
+    if (code == 0) {
+      atomic_store_32(&m->killed, 1);
+      m->resume = false;
+      m->total = m->finished + taosArrayGetSize(m->tasks);
+    }
   }
   (void)taosThreadMutexUnlock(&tsdb->mutex);
   return code;
 }
 
-void tsdbStopAllCompTask(STsdb *tsdb) { (void)tsdbKillCompact(tsdb, 0); }
+// Called with the TSDB mutex held after disabling scheduling. Use the monitor
+// because a worker may already have removed all files in its input file set.
+int32_t tsdbPauseCompact(STsdb *tsdb, SArray *tasks) {
+  SCompMonitor *m = tsdb->pCompMonitor;
+  if (m == NULL) return 0;
+  for (int32_t i = 0; i < taosArrayGetSize(m->tasks); ++i) {
+    SCompactTask *task = taosArrayGet(m->tasks, i);
+    if (taosArrayPush(tasks, &task->task) == NULL) return terrno;
+  }
+  atomic_store_32(&m->paused, 1);
+  return 0;
+}
 #endif

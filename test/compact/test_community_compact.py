@@ -352,6 +352,45 @@ class CommunityCompactTest(unittest.TestCase):
         s.sql(f"kill compact {ident} force")
         s.wait(ident)
 
+    def test_09_drop_after_compact_without_force(self):
+        s = self.server
+        db = "drop_only"
+        s.sql(f"create database {db} vgroups 1 buffer 16 stt_trigger 8")
+        s.sql(f"create table {db}.t (ts timestamp,v int)")
+        s.insert(db, "t", BASE, 500)
+        s.flush(db)
+        s.wait(s.compact(f"compact database {db}"))
+        self.assertTrue(s.manifest(db))
+        s.stop()
+        s.start()
+        s.sql(f"drop table {db}.t")
+        s.wait(s.compact(f"compact database {db}"))
+        self.assertFalse(s.manifest(db))
+
+    def test_10_resume_after_graceful_shutdown(self):
+        s = self.server
+        db = "resume_paused"
+        s.sql(f"create database {db} vgroups 1 duration 1d buffer 16 stt_trigger 8")
+        s.sql(f"create table {db}.t (ts timestamp,v int,payload binary(128))")
+        for day in range(3):
+            s.insert(db, "t", BASE + day*DAY, 30000, payload=True)
+        s.flush(db)
+        before = s.manifest(db)
+        expected = s.sql(f"select count(*),sum(v) from {db}.t")
+        ident = s.compact(f"compact database {db} force")
+        vg = s.sql(f"show {db}.vgroups")[0][0]
+        state = s.root / f"data/vnode/vnode{vg}/tsdb-compact.state"
+        self.assertEqual(state.read_bytes()[0], 1)
+        s.stop()
+        self.assertEqual(state.read_bytes()[0], 1)
+        s.start()
+        s.wait(ident)
+        after = s.manifest(db)
+        self.assertEqual(set(before), set(after))
+        for key, fset in after.items():
+            self.assertGreater(fset["last compact cid"], before[key]["last compact cid"])
+        self.assertEqual(s.sql(f"select count(*),sum(v) from {db}.t"), expected)
+
 
 if __name__ == "__main__":
     unittest.main()

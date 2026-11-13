@@ -47,6 +47,10 @@ void metaULock(SMeta* pMeta);
 // metaEntry ==================
 int metaEncodeEntry(SEncoder* pCoder, const SMetaEntry* pME);
 int metaDecodeEntry(SDecoder* pCoder, SMetaEntry* pME);
+#ifndef TD_ENTERPRISE
+int32_t metaCompact(SMeta *meta);
+int32_t metaGetTableDbVersion(SMeta *meta, int64_t *version);
+#endif
 int metaDecodeEntryImpl(SDecoder* pCoder, SMetaEntry* pME, bool headerOnly);
 
 // metaQuery ==================

@@ -7,8 +7,6 @@
 #include "../tsdb/tsdbCompact.h"
 #include "meta.h"
 
-extern int32_t metaCompact(SMeta *meta);
-
 int32_t vnodeAsyncCompact(SVnode *vnode, int64_t ver, void *buf, int32_t len, SRpcMsg *rsp) {
   SCompactVnodeReq req = {0};
   TAOS_CHECK_RETURN(tDeserializeSCompactVnodeReq(buf, len, &req));

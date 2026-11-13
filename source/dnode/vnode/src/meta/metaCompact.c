@@ -4,11 +4,17 @@
  */
 #ifndef TD_ENTERPRISE
 #include "meta.h"
+#include "vnd.h"
+#include "wal.h"
 
 // Reclaim obsolete table entries through the normal TDB transaction/journal.
-// Schema history is deliberately retained: persisted TSDB rows can still refer
-// to older schema versions. Freed B-tree pages are available for subsequent DDL.
+// Keep live-table history for versioned stream lookups and retain DROP records
+// for incremental snapshots. Only reclaim dropped-table history outside the
+// retained WAL. Freed B-tree pages are available for subsequent DDL.
 int32_t metaCompact(SMeta *meta) {
+  int64_t firstWalVersion = walGetFirstVer(meta->pVnode->pWal);
+  if (firstWalVersion <= 0) return 0;
+
   int32_t code = 0;
   TBC *cursor = NULL;
   SArray *keys = taosArrayInit(1024, sizeof(STbDbKey));
@@ -40,16 +46,21 @@ int32_t metaCompact(SMeta *meta) {
       if (klen != sizeof(STbDbKey)) { code = TSDB_CODE_FILE_CORRUPTED; goto _exit; }
       memcpy(&resume, key, sizeof(resume));
       haveResume = true;
-      void *current = NULL;
-      int len = 0;
-      int32_t ret = tdbTbGet(meta->pUidIdx, &resume.uid, sizeof(resume.uid), &current, &len);
-      bool obsolete = ret == TSDB_CODE_NOT_FOUND;
-      if (ret == 0) {
-        if (len != sizeof(SUidIdxVal)) { tdbFree(current); code = TSDB_CODE_FILE_CORRUPTED; goto _exit; }
-        obsolete = ((SUidIdxVal *)current)->version != resume.version;
-      } else if (!obsolete) { tdbFree(current); code = ret; goto _exit; }
-      tdbFree(current);
-      if (obsolete && taosArrayPush(keys, &resume) == NULL) { code = terrno; goto _exit; }
+      if (resume.version >= firstWalVersion) { done = true; break; }
+
+      int32_t ret = tdbTbGet(meta->pUidIdx, &resume.uid, sizeof(resume.uid), NULL, NULL);
+      if (ret == TSDB_CODE_NOT_FOUND) {
+        SMetaEntry entry = {0};
+        SDecoder decoder = {0};
+        tDecoderInit(&decoder, (uint8_t *)value, vlen);
+        code = metaDecodeEntryImpl(&decoder, &entry, true);
+        tDecoderClear(&decoder);
+        if (code) goto _exit;
+        if (entry.type > 0 && taosArrayPush(keys, &resume) == NULL) { code = terrno; goto _exit; }
+      } else if (ret != 0) {
+        code = ret;
+        goto _exit;
+      }
       code = tdbTbcMoveToNext(cursor);
       if (code == TSDB_CODE_NOT_FOUND) { code = 0; done = true; }
       if (code) goto _exit;
@@ -66,6 +77,32 @@ _exit:
   if (cursor) tdbTbcClose(cursor);
   metaULock(meta);
   taosArrayDestroy(keys);
+  return code;
+}
+// The table.db key is ordered by vnode version. A DROP changes this version
+// even if it generates no new TSDB files.
+int32_t metaGetTableDbVersion(SMeta *meta, int64_t *version) {
+  TBC *cursor = NULL;
+  *version = 0;
+  metaRLock(meta);
+  int32_t code = tdbTbcOpen(meta->pTbDb, &cursor, NULL);
+  if (code == 0) code = tdbTbcMoveToLast(cursor);
+  if (code == 0 && tdbTbcIsValid(cursor)) {
+    const void *key = NULL;
+    int len = 0;
+    code = tdbTbcGet(cursor, &key, &len, NULL, NULL);
+    if (code == 0) {
+      if (len != sizeof(STbDbKey)) {
+        code = TSDB_CODE_FILE_CORRUPTED;
+      } else {
+        STbDbKey entry;
+        memcpy(&entry, key, sizeof(entry));
+        *version = entry.version;
+      }
+    }
+  }
+  if (cursor) tdbTbcClose(cursor);
+  metaULock(meta);
   return code;
 }
 #endif
