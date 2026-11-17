@@ -441,7 +441,11 @@ function setup_env() {
       lib_link_dir="/usr/lib"
       lib64_link_dir="/usr/lib64"
       inc_link_dir="/usr/include"
-      service_config_dir="/etc/systemd/system"
+      if ((service_mod == 1)); then
+        service_config_dir="/etc/init.d"
+      else
+        service_config_dir="/etc/systemd/system"
+      fi
       sysctl_cmd="systemctl"
       # only for root user, create data/log/config dir links
       cfg_link_dir="${installDir}/cfg"
@@ -1778,8 +1782,8 @@ function install_plugins() {
 }
 
 function clean_service_on_sysvinit() {
-  if ps aux | grep -v grep | grep $1 &>/dev/null; then
-    service $1 stop || :
+  if [ -x "${service_config_dir}/$1" ]; then
+    service "$1" stop || :
   fi
 
   if ((${initd_mod} == 1)); then
@@ -1796,11 +1800,7 @@ function clean_service_on_sysvinit() {
     fi
   fi
 
-  rm -f ${service_config_dir}/$1 || :
-
-  if $(which init &>/dev/null); then
-    init q || :
-  fi
+  rm -f -- "${service_config_dir}/$1" || :
 }
 
 function install_service_on_sysvinit() {
@@ -1812,9 +1812,9 @@ function install_service_on_sysvinit() {
   sleep 1
 
   if ((${os_type} == 1)); then
-    cp ${script_dir}/init.d/${serverName}.deb ${service_config_dir}/${serverName} && chmod a+x ${service_config_dir}/${serverName}
+    install -m755 "${script_dir}/init.d/${serverName}.deb" "${service_config_dir}/${serverName}"
   elif ((${os_type} == 2)); then
-    cp ${script_dir}/init.d/${serverName}.rpm ${service_config_dir}/${serverName} && chmod a+x ${service_config_dir}/${serverName}
+    install -m755 "${script_dir}/init.d/${serverName}.rpm" "${service_config_dir}/${serverName}"
   fi
 
   if ((${initd_mod} == 1)); then

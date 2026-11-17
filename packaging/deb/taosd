@@ -41,7 +41,9 @@ case "$1" in
     start)
 
         log_action_begin_msg "Starting TDengine..."
-        $DAEMON_HTTPD &
+        if [ -x "$DAEMON_HTTPD" ]; then
+            "$DAEMON_HTTPD" &
+        fi
         if start-stop-daemon --test --start --chuid "$USER:$GROUP" --background --make-pidfile --pidfile "$PID_FILE" --exec "$DAEMON" -- $APPARGS &> /dev/null; then
 
             touch "$PID_FILE" && chown "$USER":"$GROUP" "$PID_FILE"
@@ -58,7 +60,9 @@ case "$1" in
 
     stop)
         log_action_begin_msg "Stopping TDengine..."
-        pkill -9 $DAEMON_HTTPD_NAME
+        if [ -x "$DAEMON_HTTPD" ]; then
+            pkill -9 "$DAEMON_HTTPD_NAME" || :
+        fi
         set +e
         if [ -f "$PID_FILE" ]; then
             start-stop-daemon --stop --pidfile "$PID_FILE" --user "$USER" --retry=TERM/120/KILL/5 > /dev/null

@@ -16,6 +16,7 @@
 # Output:
 #   <community_dir>/release/TDengine-server-<ver>-Linux-<arch>.tar.xz
 #   <community_dir>/release/TDengine-client-<ver>-Linux-<arch>.tar.xz
+# For TSDB-OSS release names, use pack_oss_tar.sh.
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 
@@ -24,9 +25,11 @@ set -e
 # ======================== Default Values ========================
 
 version=""
-versionComp="3.0.0.0"
-verType="stable"
+versionComp=""
+verType=""
 compile_dir=""
+release_dir=""
+format="legacy"
 
 productName="TDengine"
 clientName="taos"
@@ -35,19 +38,23 @@ configFile="taos.cfg"
 
 # ======================== Parse Arguments ========================
 
-while getopts "hc:n:m:V:" arg; do
+while getopts "hc:n:m:V:o:f:" arg; do
   case $arg in
     c) compile_dir="$OPTARG" ;;
     n) version="$OPTARG" ;;
     m) versionComp="$OPTARG" ;;
     V) verType="$OPTARG" ;;
+    o) release_dir="$OPTARG" ;;
+    f) format="$OPTARG" ;;
     h)
-      echo "Usage: $(basename $0) -c <compile_dir> -n <version> [-m <compat_version>] [-V stable|beta]"
+      echo "Usage: $(basename "$0") -c <compile_dir> [-n <version>] [-m <compat_version>] [-V stable|beta|preRelease] [-o <output_dir>] [-f legacy|oss]"
       echo ""
       echo "  -c  Compile directory (cmake build output, e.g. debug/)"
       echo "  -n  Version number (e.g. 3.3.6.0)"
       echo "  -m  Compatible version number (default: 3.0.0.0)"
-      echo "  -V  Version type: stable | beta (default: stable)"
+      echo "  -V  Version type: stable | beta | preRelease"
+      echo "  -o  Output directory (default: source release/)"
+      echo "  -f  Archive naming: legacy or oss (OSS reads version metadata from CMakeCache.txt)"
       exit 0
       ;;
     ?)
@@ -64,44 +71,75 @@ if [ -z "$compile_dir" ]; then
   exit 1
 fi
 
-if [ -z "$version" ]; then
-  echo "Error: version number (-n) is required"
+if [[ "$format" != legacy && "$format" != oss ]]; then
+  echo "Error: archive format must be 'legacy' or 'oss'" >&2
   exit 1
 fi
-
-# Validate version format: digits and dots only, 3-5 segments
-version_pattern='^([0-9]+\.){2,4}[0-9]+$'
-if [[ ! "$version" =~ $version_pattern ]]; then
-  echo "Error: invalid version format '$version' (expected e.g. 3.3.6.0)"
-  exit 1
-fi
-
-if [[ "$verType" != "stable" && "$verType" != "beta" && "$verType" != "preRelease" ]]; then
-  echo "Error: verType must be 'stable', 'beta', or 'preRelease'"
-  exit 1
-fi
-
-# ======================== Detect Environment ========================
 
 script_dir="$(dirname "$(readlink -f "$0")")"
 community_dir="$(readlink -f "${script_dir}/..")"
+release_dir=${release_dir:-"${community_dir}/release"}
 
-# Resolve compile_dir to absolute path
-if [[ "$compile_dir" != /* ]]; then
-  compile_dir="$(readlink -f "${community_dir}/${compile_dir}")"
+# Preserve source-relative paths for the legacy entry point.
+if [[ "$format" == legacy && "$compile_dir" != /* ]]; then
+  compile_dir="${community_dir}/${compile_dir}"
 fi
-
+compile_dir="$(cd -- "$compile_dir" && pwd)" || exit 1
 build_dir="${compile_dir}/build"
-release_dir="${community_dir}/release"
 code_dir="${community_dir}"
 cfg_dir="${community_dir}/packaging/cfg"
 tools_dir="${community_dir}/packaging/tools"
 
-# Copy the shipped C examples from packaging/examples-manifest.txt. The sources
-# were consolidated into docs/examples, but this wrapper keeps the same package
-# subset as the tarball / deb / rpm packagers so the examples payload does not
-# grow with the whole docs tree.
-copy_c_examples() {
+if [[ "$format" == oss ]]; then
+  cache_file="${compile_dir}/CMakeCache.txt"
+  if [[ ! -r "$cache_file" ]]; then
+    echo "Error: missing CMake build metadata: $cache_file" >&2
+    exit 1
+  fi
+  cache_value() {
+    sed -n "s/^${1}:[^=]*=//p" "$cache_file"
+  }
+  edition=$(cache_value BUILD_ENTERPRISE)
+  case "${edition^^}" in
+    OFF|FALSE|0|NO) ;;
+    *) echo "Error: OSS packages require a community build (BUILD_ENTERPRISE=OFF)" >&2; exit 1 ;;
+  esac
+  build_version=$(cache_value BUILD_VER_NUMBER)
+  build_compat=$(cache_value BUILD_VER_COMPATIBLE)
+  build_type=$(cache_value BUILD_VER_TYPE)
+  version=${version:-"$build_version"}
+  versionComp=${versionComp:-"$build_compat"}
+  verType=${verType:-"$build_type"}
+  if [[ -z "$version" || -z "$versionComp" || -z "$verType" ||
+        "$version" != "$build_version" || "$versionComp" != "$build_compat" || "$verType" != "$build_type" ]]; then
+    echo "Error: package version, compatibility version and release type must match $cache_file" >&2
+    exit 1
+  fi
+else
+  if [[ -z "$version" ]]; then
+    echo "Error: version number (-n) is required for legacy packages" >&2
+    exit 1
+  fi
+  versionComp=${versionComp:-3.0.0.0}
+  verType=${verType:-stable}
+fi
+
+version_pattern='^([0-9]+\.){2,4}[0-9]+$'
+if [[ ! "$version" =~ $version_pattern ]]; then
+  echo "Error: expected a numeric version (e.g. 3.4.3.9)" >&2
+  exit 1
+fi
+if [[ "$format" == oss && ! "$versionComp" =~ $version_pattern ]]; then
+  echo "Error: expected a numeric compatibility version (e.g. 3.0.0.0)" >&2
+  exit 1
+fi
+if [[ "$verType" != stable && "$verType" != beta && "$verType" != preRelease ]]; then
+  echo "Error: release type must be 'stable', 'beta', or 'preRelease'" >&2
+  exit 1
+fi
+
+# Copy the release subset from packaging/examples-manifest.txt.
+copy_examples() {
   local dst_dir=$1
   local examples_src="${community_dir}/docs/examples"
   local examples_manifest="${community_dir}/packaging/examples-manifest.txt"
@@ -110,7 +148,11 @@ copy_c_examples() {
   while read -r ex_group ex_dst ex_src; do
     case "${ex_group}" in "" | \#*) continue ;; esac
     [ "${ex_group}" = all ] || continue
-    [ "${ex_dst}" = c ] || continue
+    if [[ "$format" == oss ]]; then
+      ex_dst=${ex_src%%/*}
+    else
+      [ "${ex_dst}" = c ] || continue
+    fi
     if [ ! -f "${examples_src}/${ex_src}" ]; then
       echo "Error: example source missing: ${ex_src} (see ${examples_manifest})" >&2
       exit 1
@@ -151,16 +193,6 @@ case "$arch_raw" in
     ;;
 esac
 
-echo "============================================================"
-echo "  Community tar.gz Packaging"
-echo "  Version:    ${version}"
-echo "  Compatible: ${versionComp}"
-echo "  VerType:    ${verType}"
-echo "  Arch:       ${arch} (${arch_raw})"
-echo "  Build dir:  ${build_dir}"
-echo "  Output dir: ${release_dir}"
-echo "============================================================"
-
 # ======================== Verify Required Files ========================
 
 # Required binaries
@@ -194,6 +226,56 @@ for f in \
   fi
 done
 
+if [[ "$format" == oss ]]; then
+  elf_machine() {
+    LC_ALL=C readelf -h "$1" | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p'
+  }
+  machine=$(elf_machine "${build_dir}/bin/${serverName}")
+  case "$machine" in
+    'Advanced Micro Devices X86-64') arch=x64 ;;
+    AArch64) arch=arm64 ;;
+    *) echo "Error: unsupported OSS ELF architecture: $machine" >&2; exit 1 ;;
+  esac
+  for artifact in "bin/${clientName}" lib/libtaos.so lib/libtaosnative.so; do
+    if [[ $(elf_machine "${build_dir}/${artifact}") != "$machine" ]]; then
+      echo "Error: artifact architecture differs from taosd: $artifact" >&2
+      exit 1
+    fi
+  done
+
+  # Verify the actual binary versions on the target architecture to catch a
+  # build directory that was reconfigured without rebuilding the binaries.
+  if [[ "$arch_raw" == x86_64 && "$arch" == x64 || "$arch_raw" == aarch64 && "$arch" == arm64 ]]; then
+    for binary in "$serverName" "$clientName"; do
+      reported=$(LD_LIBRARY_PATH="${build_dir}/lib" "${build_dir}/bin/${binary}" -V)
+      if ! grep -Fxq "${binary} version: ${version}.community compatible_version: ${versionComp}" <<< "$reported"; then
+        echo "Error: binary version does not match the package metadata: $binary" >&2
+        exit 1
+      fi
+    done
+  fi
+  os_type=linux
+  server_pkg_name="tdengine-tsdb-oss-${version}"
+  client_pkg_name="tdengine-tsdb-oss-client-${version}"
+else
+  server_pkg_name="${productName}-server-${version}"
+  client_pkg_name="${productName}-client-${version}"
+fi
+
+release_suffix=""
+if [[ "$verType" != stable ]]; then
+  release_suffix="-${verType}"
+fi
+server_tar_name="${server_pkg_name}${release_suffix}-${os_type}-${arch}.tar.xz"
+client_tar_name="${client_pkg_name}${release_suffix}-${os_type}-${arch}.tar.xz"
+
+mkdir -p -- "$release_dir"
+release_dir="$(cd -- "$release_dir" && pwd)"
+stage_dir="$(mktemp -d "${release_dir}/.tdengine-package.XXXXXX")"
+trap 'rm -rf -- "$stage_dir"' EXIT
+
+printf 'Packaging %s (%s, %s %s) into %s\n' "$version" "$verType" "$os_type" "$arch" "$release_dir"
+
 # ======================== Helper Functions ========================
 
 # Copy a file if it exists; skip silently otherwise
@@ -212,10 +294,12 @@ patch_server_install_messages() {
   # Community tar packages do not ship those components, so trim the misleading
   # guidance from the copied installer.
   sed -i \
-    -e '/To configure \${clientName}-explorer /d' \
-    -e '/To start \${clientName}keeper /d' \
-    -e '/To start \${clientName}-explorer /d' \
-    -e '/Graphic User Interface/d' \
+    -e '/To configure \${keeperName}:/d' \
+    -e '/To configure \${xname}:/d' \
+    -e '/To configure \${explorerName}:/d' \
+    -e '/To start \${keeperName}:/d' \
+    -e '/To start \${explorerName}:/d' \
+    -e '/To access \${productName} GUI:/d' \
     "$installer"
 }
 
@@ -224,11 +308,7 @@ patch_server_install_messages() {
 echo ""
 echo ">>> Building server package..."
 
-server_pkg_name="${productName}-server-${version}"
-server_dir="${release_dir}/${server_pkg_name}"
-
-# Clean previous output
-rm -rf "${server_dir}"
+server_dir="${stage_dir}/${server_pkg_name}"
 mkdir -p "${server_dir}"
 
 # --- Inner package: bin/ ---
@@ -255,6 +335,15 @@ chmod a+x "${server_dir}/bin/"* 2>/dev/null || :
 mkdir -p "${server_dir}/cfg"
 copy_if_exists "${cfg_dir}/${configFile}"     "${server_dir}/cfg/"
 copy_if_exists "${cfg_dir}/${serverName}.service" "${server_dir}/cfg/"
+install -Dm644 "${community_dir}/packaging/deb/taosd" "${server_dir}/init.d/taosd.deb"
+install -Dm644 "${community_dir}/packaging/rpm/taosd" "${server_dir}/init.d/taosd.rpm"
+if [[ "$format" == oss ]]; then
+  copy_if_exists "${tools_dir}/set_taos_malloc.sh" "${server_dir}/bin/"
+  if [[ ! -x "${server_dir}/bin/taosudf" ]]; then
+    sed -i '/^[[:space:]]*udf[[:space:]]/d' "${server_dir}/cfg/${configFile}"
+    printf '\nudf 0\n' >> "${server_dir}/cfg/${configFile}"
+  fi
+fi
 
 # --- Inner package: inc/ ---
 mkdir -p "${server_dir}/inc"
@@ -274,7 +363,7 @@ cp "${build_dir}/lib/libtaosnative.so" "${server_dir}/driver/libtaosnative.so.${
 echo "${versionComp}" > "${server_dir}/driver/vercomp.txt"
 
 # --- Outer package: examples/ ---
-copy_c_examples "${server_dir}"
+copy_examples "${server_dir}"
 
 # --- Outer package: install.sh ---
 cp "${tools_dir}/install.sh" "${server_dir}/"
@@ -282,85 +371,29 @@ sed -i 's/verMode=cluster/verMode=edge/g' "${server_dir}/install.sh" 2>/dev/null
 patch_server_install_messages "${server_dir}/install.sh"
 chmod a+x "${server_dir}/install.sh"
 
-# --- Outer package: start-all.sh / stop-all.sh ---
-# Community edition: only taosd service (no taosx/adapter/keeper/explorer)
-cat > "${server_dir}/start-all.sh" << 'STARTEOF'
-#!/bin/bash
-
-prefix="taos"
-versionType="community"
-SERVICES=("${prefix}d")
-OS_TYPE=$(uname)
-
-start_service() {
-    local service="$1"
-    if [ "${OS_TYPE}" = "Linux" ]; then
-        if [ "$(id -u)" -eq 0 ]; then
-            systemctl start "${service}" 2>/dev/null && echo "✓ ${service} started" || echo "✗ Failed to start ${service}"
-        else
-            systemctl --user start "${service}" 2>/dev/null && echo "✓ ${service} started" || echo "✗ Failed to start ${service}"
-        fi
-    fi
-}
-
-echo "Starting TDengine Community services..."
-for service in "${SERVICES[@]}"; do
-    start_service "${service}"
-done
-echo "Done."
-STARTEOF
-chmod a+x "${server_dir}/start-all.sh"
-
-cat > "${server_dir}/stop-all.sh" << 'STOPEOF'
-#!/bin/bash
-
-prefix="taos"
-versionType="community"
-SERVICES=("${prefix}d")
-OS_TYPE=$(uname)
-
-stop_service() {
-    local service="$1"
-    if [ "${OS_TYPE}" = "Linux" ]; then
-        if [ "$(id -u)" -eq 0 ]; then
-            systemctl stop "${service}" 2>/dev/null && echo "${service} stopped" || echo "Failed to stop ${service}"
-        else
-            systemctl --user stop "${service}" 2>/dev/null && echo "${service} stopped" || echo "Failed to stop ${service}"
-        fi
-    fi
-}
-
-echo "Stopping TDengine Community services..."
-for service in "${SERVICES[@]}"; do
-    stop_service "${service}"
-done
-echo "Done."
-STOPEOF
-chmod a+x "${server_dir}/stop-all.sh"
-
-# --- Create outer tar.gz ---
-echo "  Creating server tar.gz..."
-cd "${release_dir}"
-
-if [[ "$verType" == "beta" ]] || [[ "$verType" == "preRelease" ]]; then
-  server_tar_name="${server_pkg_name}-${verType}-${os_type}-${arch}.tar.xz"
-else
-  server_tar_name="${server_pkg_name}-${os_type}-${arch}.tar.xz"
+# The community packages have one managed service, taosd.
+for action in start stop; do
+  {
+    printf '#!/bin/bash\naction=%s\n' "$action"
+    cat <<'SERVICEEOF'
+if [[ $(id -u) -ne 0 ]]; then
+    exec systemctl --user "$action" taosd
 fi
-
-tar -Jcf "${server_tar_name}" "$(basename "$server_dir")" --remove-files
-echo "  ✓ Server package: ${release_dir}/${server_tar_name}"
+if [[ ! -d /run/systemd/system && -x /etc/init.d/taosd ]]; then
+    exec service taosd "$action"
+fi
+exec systemctl "$action" taosd
+SERVICEEOF
+  } > "${server_dir}/${action}-all.sh"
+  chmod a+x "${server_dir}/${action}-all.sh"
+done
 
 # ======================== Build Client Package ========================
 
 echo ""
 echo ">>> Building client package..."
 
-client_pkg_name="${productName}-client-${version}"
-client_dir="${release_dir}/${client_pkg_name}"
-
-# Clean previous output
-rm -rf "${client_dir}"
+client_dir="${stage_dir}/${client_pkg_name}"
 mkdir -p "${client_dir}"
 
 # --- Inner package: bin/ ---
@@ -402,34 +435,34 @@ cp "${build_dir}/lib/libtaosnative.so" "${client_dir}/driver/libtaosnative.so.${
 echo "${versionComp}" > "${client_dir}/driver/vercomp.txt"
 
 # --- Outer package: examples/ ---
-copy_c_examples "${client_dir}"
+copy_examples "${client_dir}"
 
 # --- Outer package: install_client.sh ---
 cp "${tools_dir}/install_client.sh" "${client_dir}/"
 sed -i 's/verMode=cluster/verMode=edge/g' "${client_dir}/install_client.sh" 2>/dev/null || :
 chmod a+x "${client_dir}/install_client.sh"
 
-# --- Create outer tar.gz ---
-echo "  Creating client tar.gz..."
-cd "${release_dir}"
-
-if [[ "$verType" == "beta" ]] || [[ "$verType" == "preRelease" ]]; then
-  client_tar_name="${client_pkg_name}-${verType}-${os_type}-${arch}.tar.xz"
-else
-  client_tar_name="${client_pkg_name}-${os_type}-${arch}.tar.xz"
+if [[ "$format" == oss ]]; then
+  cp "${community_dir}/LICENSE" "${server_dir}/"
+  cp "${community_dir}/LICENSE" "${client_dir}/"
+  printf '# TDengine TSDB-OSS %s\n\nRun `sudo bash ./install.sh -s -e no` to install the native server and client.\n' \
+    "$version" > "${server_dir}/README.md"
+  printf '# TDengine TSDB-OSS Client %s\n\nRun `sudo bash ./install_client.sh` to install the native client.\n' \
+    "$version" > "${client_dir}/README.md"
 fi
 
-tar -Jcf "${client_tar_name}" "$(basename "$client_dir")" --remove-files
-echo "  ✓ Client package: ${release_dir}/${client_tar_name}"
-
-# ======================== Summary ========================
-
-echo ""
-echo "============================================================"
-echo "  Packaging complete!"
-echo ""
-echo "  Server: ${release_dir}/${server_tar_name}"
-echo "  Client: ${release_dir}/${client_tar_name}"
-echo ""
+echo "Creating ${server_tar_name} and ${client_tar_name}..."
+tar -C "$stage_dir" -Jcf "${stage_dir}/${server_tar_name}" "$server_pkg_name"
+tar -C "$stage_dir" -Jcf "${stage_dir}/${client_tar_name}" "$client_pkg_name"
+if [[ "$format" == oss ]]; then
+  checksum_name="SHA256SUMS-${version}${release_suffix}-${os_type}-${arch}.txt"
+  (
+    cd "$stage_dir"
+    sha256sum "$server_tar_name" "$client_tar_name" > "$checksum_name"
+  )
+fi
+mv -- "${stage_dir}/${server_tar_name}" "${stage_dir}/${client_tar_name}" "$release_dir/"
+if [[ "$format" == oss ]]; then
+  mv -- "${stage_dir}/${checksum_name}" "$release_dir/"
+fi
 ls -lh "${release_dir}/${server_tar_name}" "${release_dir}/${client_tar_name}"
-echo "============================================================"

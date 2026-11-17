@@ -232,7 +232,7 @@ aarch64 的架构后缀为 `arm64`。`-V stable` 的文件名不带 `-stable`；
 
 服务端包包含 taosd、taos、两个核心驱动库、配置、头文件、C 示例及安装脚本；客户端包包含 taos、两个驱动库、配置、头文件、C 示例及客户端安装脚本。存在 `taosudf`、`taosBenchmark` 或 `taosdump` 产物时，脚本会按其规则收集。该社区版脚本不收集 taosadapter、taoskeeper、Explorer，也不收集 WebSocket 驱动；本文使用原生连接。
 
-脚本输出文字中个别地方仍写着 `tar.gz`，但实际创建的是 **xz 压缩的 `.tar.xz`**，应使用 `tar -tJf` / `tar -xJf`。不要沿用旧示例中的 `tar -xzf`。
+产物采用 xz 压缩。用 `tar -tJf` 查看清单，用 `tar -xJf` 解包。
 
 ### 6.3 清单与完整性检查
 
@@ -278,6 +278,25 @@ LD_LIBRARY_PATH="$TD_UNPACKED/driver" "$TD_UNPACKED/bin/taos" -V
 ```
 
 检查两个核心库确实解析到临时目录的 `driver/`，而不是构建机绝对路径或目标机器残留的旧库。上述校验和文件包含两个包，运行 `sha256sum -c` 的目录应同时有两个包。
+
+### 6.5 按 TSDB-OSS 发布命名打包
+
+完成目标系统的社区版构建后，传入含有 `CMakeCache.txt` 的构建根目录。打包需要 `tar`、`xz`、`sha256sum` 和 `readelf`（`binutils` 包）。脚本从 CMake 缓存读取版本、兼容版本和发布类型，并从核心 ELF 产物识别 `x64` 或 `arm64`。部署到 Ubuntu 时，使用目标 Ubuntu 版本编译出的产物。
+
+```bash
+"$TD_SRC/packaging/pack_oss_tar.sh" -c "$TD_BUILD" -o "$TD_SRC/release/oss"
+cd "$TD_SRC/release/oss"
+sha256sum -c SHA256SUMS-3.4.3.9-preRelease-linux-x64.txt
+```
+
+`3.4.3.9` 的 x64 `preRelease` 构建会生成以下产物。
+
+| 压缩包 | 解包后的安装入口 |
+| --- | --- |
+| `tdengine-tsdb-oss-3.4.3.9-preRelease-linux-x64.tar.xz` | `tdengine-tsdb-oss-3.4.3.9/install.sh` |
+| `tdengine-tsdb-oss-client-3.4.3.9-preRelease-linux-x64.tar.xz` | `tdengine-tsdb-oss-client-3.4.3.9/install_client.sh` |
+
+`stable` 构建的包名省略发布类型。两个包都包含原生客户端和版本化的客户端库。服务端包还提供 `taosd`、服务配置及启停脚本。由本仓库构建的核心包不包含 taosadapter、taoskeeper、Explorer、WebSocket 驱动和第三方连接器。没有 `taosudf` 产物时，服务端包的初始配置设为 `udf 0`。
 
 ## 7. 在服务端机器安装或升级
 
