@@ -413,32 +413,15 @@ cmake --build "$TD_BUILD" --target shell -j "$TD_JOBS"
 
 - OpenSSL 配置阶段报告 `FindBin.pm`、`Params/Check.pm`、`ExtUtils/MM/Utils.pm` 缺失：先补齐完整 Perl 环境。Fedora 上使用前述 `perl-core` 和 `perl-IPC-Cmd`；不要只安装最小 perl-interpreter。
 - `gsasl.h` / `curl/curl.h` 缺失：检查 `BUILD_CONTRIB=ON`，以及对应 ExternalProject 的构建日志。可先构建 `ext_gsasl` / `ext_curl` 目标定位问题；依赖成功后再构建主目标。
-- `aclocal-1.16: command not found`：这是依赖源码试图重生成 autotools 文件的错误，不是 COMPACT 源码编译错误。优先使用匹配的构建工具链。本次环境也遇到过解包生成文件的时间戳导致不必要重生成的问题，见下一段的有限处理方法。
+- `aclocal-1.16: command not found`。GSASL 的发布包已包含 Autotools 生成文件。CMake 保留这些文件在压缩包里的时间戳，避免解包后触发重新生成。
 
-仅当错误出现在已经成功 configure 的 `ext_gsasl`、未修改其 `.m4` / `configure.ac`、且只是生成文件时间戳异常时，可恢复已生成文件的顺序后重试：
+如果旧的 Release 构建目录已经按解包时间生成过 GSASL 缓存，更新源码后移走 GSASL 的下载完成标记，再执行原编译命令。CMake 会重新校验并解包已缓存的压缩包。
 
 ```bash
-TD_GSASL_SOURCE="$TD_SRC/.externals/build/ext_gsasl/src/ext_gsasl" python3 - <<'PY'
-import os
-from pathlib import Path
-import time
-
-root = Path(os.environ['TD_GSASL_SOURCE'])
-assert root.is_dir(), root
-now = time.time()
-for name in ('aclocal.m4', 'configure'):
-    path = root / name
-    if path.exists():
-        os.utime(path, (now - 10, now - 10))
-for path in root.rglob('Makefile.in'):
-    os.utime(path, (now - 8, now - 8))
-for path in root.rglob('Makefile'):
-    os.utime(path, (now - 1, now - 1))
-PY
-cmake --build "$TD_BUILD" --target ext_gsasl -j "$TD_JOBS"
+TD_EXTERNALS=$(sed -n 's/^TD_EXTERNALS_BASE_DIR:PATH=//p' "$TD_BUILD/CMakeCache.txt")
+TD_GSASL_STAMP="$TD_EXTERNALS/build/Release/ext_gsasl/src/ext_gsasl-stamp/ext_gsasl-download"
+mv -- "$TD_GSASL_STAMP" "$TD_GSASL_STAMP.before-timestamp-fix"
 ```
-
-如果实际修改过 autotools 输入文件，应使用匹配的 autotools 正常重新生成，不能采用这一处理方法。
 
 ### 10.3 包内没有客户端或版本不一致
 

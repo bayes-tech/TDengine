@@ -20,7 +20,14 @@ if [[ $image == -h || $image == --help ]]; then
 fi
 
 case $engine in
-  docker) build=(docker buildx build --load) ;;
+  docker)
+    if docker buildx version >/dev/null 2>&1; then
+      build=(docker buildx build --load)
+    else
+      printf '%s\n' 'Docker Buildx is unavailable. Using the classic Docker builder.' >&2
+      build=(env DOCKER_BUILDKIT=0 docker build)
+    fi
+    ;;
   podman) build=(podman build) ;;
   *) printf '%s\n' 'CONTAINER_ENGINE must be docker or podman.' >&2; exit 1 ;;
 esac

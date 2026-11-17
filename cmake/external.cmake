@@ -2187,9 +2187,16 @@ if(${BUILD_LIBGSASL} AND ${TD_LINUX})      # {
         "https://mirrors.tuna.tsinghua.edu.cn/gnu/gsasl/gsasl-2.2.2.tar.gz"
         "gsasl-2.2.2.tar.gz"
     )
+    # Use the shipped Autotools files. Extraction-time timestamps can make
+    # configure.ac newer than aclocal.m4 and trigger a versioned Automake rebuild.
+    set(_gsasl_timestamp_args "")
+    if(POLICY CMP0135)
+        list(APPEND _gsasl_timestamp_args DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    endif()
     ExternalProject_Add(ext_gsasl
         URL ${_url} "https://ftp.gnu.org/gnu/gsasl/gsasl-2.2.2.tar.gz"
         URL_HASH SHA256=41e8e442648eccaf6459d9ad93d4b18530b96c8eaf50e3f342532ef275eff3ba
+        ${_gsasl_timestamp_args}
         PREFIX "${_base}"
         BUILD_IN_SOURCE TRUE
         CONFIGURE_COMMAND

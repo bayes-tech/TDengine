@@ -23,7 +23,7 @@ packaging/ubuntu-x64/build.sh ../tdengine-build-ubuntu-x64
 packaging/ubuntu-x64/build-image.sh
 ```
 
-默认镜像标签为 `tdengine-community:3.4.3.9-ubuntu24.04-x64`，可以通过脚本的第一个参数自定义。需要 Docker Engine 和 Buildx。使用 Podman 时设置 `CONTAINER_ENGINE=podman`。在 x86_64 主机上可原生构建。在 ARM64 主机上可使用 x64 构建节点或 QEMU 仿真。
+默认镜像标签为 `tdengine-community:3.4.3.9-ubuntu24.04-x64`，可以通过脚本的第一个参数自定义。需要 Docker Engine。脚本优先使用 Buildx，缺少插件时使用支持经典构建器的 `docker build`。使用 Podman 时设置 `CONTAINER_ENGINE=podman`。在 x86_64 主机上可原生构建。在 ARM64 主机上可使用 x64 构建节点或 QEMU 仿真。
 
 脚本使用当前工作树中由 Git 跟踪的文件及未被忽略的新文件，镜像标签 `org.opencontainers.image.revision` 记录工作树的基准提交。镜像的构建和运行阶段都使用 Ubuntu 24.04。运行阶段以 UID/GID 10001 启动前台 `taosd`，配置在 `/etc/taos/taos.cfg`，数据和日志分别写入 `/var/lib/taos`、`/var/log/taos`。
 
