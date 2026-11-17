@@ -1265,6 +1265,9 @@ else()
         "https://github.com/curl/curl/releases/download/curl-8_11_1/curl-8.11.1.tar.gz"
         "curl-8.11.1.tar.gz"
     )
+    if("${LOCAL_URL}" STREQUAL "")
+        list(APPEND _url "https://curl.se/download/curl-8.11.1.tar.gz")
+    endif()
     ExternalProject_Add(ext_curl
         URL ${_url}
         URL_HASH SHA256=a889ac9dbba3644271bd9d1302b5c22a088893719b72be3487bc3d401e5c4e80
