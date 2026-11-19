@@ -809,7 +809,7 @@ static int generateChildTblName(int len, char *buffer, SDataBase *database,
         " IF NOT EXISTS %s.%s USING %s.%s TAGS (%s) %s ";
 
     if (stbInfo->useTagTableName) {
-        char *firstComma = strchr(tagStart, ',');
+        char *firstComma = (char *)strchr(tagStart, ',');
         if (firstComma == NULL) {
             errorPrint("Invalid tag data format: %s\n", tagStart);
             return -1;
