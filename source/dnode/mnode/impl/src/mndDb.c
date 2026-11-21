@@ -3000,7 +3000,7 @@ static int32_t mndTrimDbWal(SMnode *pMnode, SDbObj *pDb) {
     if (pHead == NULL) {
       sdbCancelFetch(pSdb, pVgroup);
       sdbRelease(pSdb, pVgroup);
-      code = TSDB_CODE_OUT_OF_MEMORY;
+      if (code == 0) code = TSDB_CODE_OUT_OF_MEMORY;
       break;
     }
     pHead->contLen = htonl(contLen);
@@ -3009,9 +3009,10 @@ static int32_t mndTrimDbWal(SMnode *pMnode, SDbObj *pDb) {
     // Send TRIM WAL request to vnode
     SRpcMsg rpcMsg = {.msgType = TDMT_VND_TRIM_WAL, .pCont = pHead, .contLen = contLen};
     SEpSet  epSet = mndGetVgroupEpset(pMnode, pVgroup);
-    code = tmsgSendReq(&epSet, &rpcMsg);
-    if (code != 0) {
-      mError("vgId:%d, failed to send vnode-trim-wal request since 0x%x", pVgroup->vgId, code);
+    int32_t sendCode = tmsgSendReq(&epSet, &rpcMsg);
+    if (sendCode != 0) {
+      if (code == 0) code = sendCode;
+      mError("vgId:%d, failed to send vnode-trim-wal request since 0x%x", pVgroup->vgId, sendCode);
     } else {
       mInfo("vgId:%d, send vnode-trim-wal request to vnode", pVgroup->vgId);
     }

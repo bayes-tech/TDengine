@@ -366,6 +366,7 @@ int32_t tsdbRetention(void *arg) {
   int64_t startTs = taosGetTimestampMs();
   bool    keyOpStarted = false;  // whether the "tier-migrate" START KEYOP log below was actually printed
 
+  bool       taskAcquired = false;
   SRtnArg   *rtnArg = (SRtnArg *)arg;
   STsdb     *pTsdb = rtnArg->tsdb;
   SVnode    *pVnode = pTsdb->pVnode;
@@ -391,6 +392,7 @@ int32_t tsdbRetention(void *arg) {
 
   // set flag and copy
   tsdbBeginTaskOnFileSet(pTsdb, rtnArg->fid, EVA_TASK_RETENTION, &fset);
+  taskAcquired = fset != NULL;
   if (fset && (code = tsdbTFileSetInitCopy(pTsdb, fset, &rtner.fset))) {
     (void)taosThreadMutexUnlock(&pTsdb->mutex);
     TSDB_CHECK_CODE(code, lino, _exit);
@@ -422,7 +424,7 @@ int32_t tsdbRetention(void *arg) {
   }
 
 _exit:
-  if (rtner.fset) {
+  if (taskAcquired) {
     (void)taosThreadMutexLock(&pTsdb->mutex);
     tsdbFinishTaskOnFileSet(pTsdb, rtnArg->fid, EVA_TASK_RETENTION);
     (void)taosThreadMutexUnlock(&pTsdb->mutex);
